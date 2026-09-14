@@ -103,12 +103,9 @@ with col1:
             st.success("Analysis Complete! Here is the AI Prediction:")
             
             # रिजल्ट डिस्प्ले बॉक्स
-            , res2 = st.columnres1s(2)
-            wres1, res2 = st.columns(2)
-with res1:
-    st.metric(label=f"Predicted Score at {target_prediction_over} Overs", value=f"{predicted_target_runs} Runs")
-
-
+            res1, res2 = st.columns(2)
+            with res1:
+                st.metric(label=f"Predicted Score at {target_prediction_over} Overs", value=f"{predicted_target_runs} Runs")
             with res2:
                 confidence = random.randint(84, 96)
                 st.metric(label="AI Accuracy Confidence", value=f"{confidence}%")
