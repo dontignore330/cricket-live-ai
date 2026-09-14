@@ -2,14 +2,12 @@ import streamlit as st
 import random
 import time
 
-# पेज की सेटिंग और थीम
 st.set_page_config(
     page_title="AI Cricket Predictor Pro",
     page_icon="🏏",
     layout="wide"
 )
 
-# कस्टम CSS स्टाइलिंग
 st.markdown("""
     <style>
     .main {
@@ -33,17 +31,11 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# टाइटल
 st.title("🏏 AI Live Cricket Predictor & Analyser")
 st.markdown("---")
 
-# --- साइडबार: मैच और लीग सेलेक्शन ---
 st.sidebar.header("⚙️ Match Control Panel")
-
-selected_league = st.sidebar.selectbox(
-    "Select League / Series",
-    ["IPL 2026", "Big Bash League (BBL)", "Women's Big Bash (WBBL)", "WPL", "International T20"]
-)
+selected_league = st.sidebar.selectbox("Select League / Series", ["IPL 2026", "Big Bash League (BBL)", "Women's Big Bash (WBBL)", "WPL", "International T20"])
 
 live_matches = {
     "IPL 2026": "RCB vs CSK",
@@ -67,7 +59,6 @@ current_runs = st.sidebar.number_input("Current Runs", min_value=0, max_value=30
 current_wickets = st.sidebar.number_input("Current Wickets", min_value=0, max_value=10, value=0)
 target_prediction_over = st.sidebar.slider("Predict Score At Over:", min_value=int(current_over)+1, max_value=20, value=6)
 
-# --- मुख्य स्क्रीन लेआउट ---
 col1, col2 = st.columns([2, 1])
 
 with col1:
@@ -117,4 +108,3 @@ with col2:
 
 st.markdown("---")
 st.markdown("<p style='text-align: center; color: gray;'>Powered by AI & Live Cricket Data Engine | Built for 24/7 Free Live Usage</p>", unsafe_allow_html=True)
-
