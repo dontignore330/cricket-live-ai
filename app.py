@@ -6,10 +6,46 @@ import time
 
 st.set_page_config(
     page_title="Real-Data AI Cricket Predictor",
-    page_icon="⚡",
+    page_icon="🔒",
     layout="wide"
 )
 
+# --- PASSWORD PROTECTION SYSTEM (Password: Amit4455) ---
+def check_password():
+    """Returns True if the user entered the correct password."""
+    def password_entered():
+        if st.session_state["password"] == "Amit4455":
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.markdown("<h2 style='text-align: center;'>🔐 Restricted Access - Private App</h2>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: gray;'>यह ऐप पूरी तरह प्राइवेट है। उपयोग करने के लिए कृपया पासवर्ड दर्ज करें।</p>", unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.text_input("Enter Password", type="password", on_change=password_entered, key="password")
+            if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+                st.error("😕 गलत पासवर्ड! कृपया सही पासवर्ड डालें।")
+        return False
+    elif not st.session_state["password_correct"]:
+        st.markdown("<h2 style='text-align: center;'>🔐 Restricted Access - Private App</h2>", unsafe_allow_html=True)
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.text_input("Enter Password", type="password", on_change=password_entered, key="password")
+            if not st.session_state["password_correct"]:
+                st.error("😕 गलत पासवर्ड! कृपया सही पासवर्ड डालें।")
+        return False
+    else:
+        return True
+
+if not check_password():
+    st.stop()  # पासवर्ड सही होने तक ऐप आगे नहीं खुलेगी
+
+
+# --- MAIN APP CODE (पासवर्ड सही होने के बाद दिखने वाला हिस्सा) ---
 st.markdown("""
     <style>
     .main { background-color: #0e1117; color: #ffffff; }
@@ -28,7 +64,6 @@ def load_data():
     if os.path.exists(csv_file):
         return pd.read_csv(csv_file)
     else:
-        # Fallback dummy data if file is missing temporarily
         return pd.DataFrame({
             'season': [2023, 2024, 2025],
             'venue': ['Adelaide Oval', 'Melbourne Cricket Ground', 'Sydney Cricket Ground'],
@@ -67,8 +102,6 @@ current_wickets = st.sidebar.number_input("Current Wickets Fallen", min_value=0,
 st.sidebar.markdown("---")
 target_future_over = st.sidebar.slider("Predict Score At Over (Milestone):", min_value=1, max_value=20, value=6)
 
-# --- AUTO-UPDATE SIMULATOR FOR ONGOING LEAGUES ---
-# This app automatically appends new live inputs to local session memory so current season matches count instantly
 if 'dynamic_matches' not in st.session_state:
     st.session_state['dynamic_matches'] = []
 
@@ -101,7 +134,6 @@ with col1:
             with st.spinner("Querying 2021-2025 match archives & matching similar situations..."):
                 time.sleep(1.2)
                 
-                # Real Database Matching Logic
                 matched_rows = df_history[
                     (df_history['venue'].str.contains(ground_name, case=False, na=False)) & 
                     (df_history['target_over'] == target_future_over)
@@ -111,14 +143,11 @@ with col1:
                 
                 if match_count > 0:
                     avg_historical_runs = matched_rows['final_phase_runs'].mean()
-                    # Blend historical actual data with current live run rate factor
                     base_calc = (current_rr * target_future_over * 0.6) + (avg_historical_runs * 0.4)
                 else:
-                    # Fallback intelligent weight if exact venue match is low
                     match_count = random.randint(15, 35)
                     base_calc = current_rr * target_future_over * 1.05
                 
-                # Pitch adjustments
                 if "Batting" in pitch_behavior:
                     base_calc *= 1.10
                 elif "Bowling" in pitch_behavior:
@@ -147,13 +176,12 @@ with col2:
     st.markdown(f"**Active Engine:** CSV Loaded Successfully 🟢")
     st.markdown(f"**Total Archives:** {len(df_history)} Match Phases")
     st.markdown("""
-    * **Data Range:** 2021, 2022, 2023, 2024, 2025
-    * **Auto-Learning:** Active for current season matches.
+    * **Data Range:** 2021-2025 Archive
+    * **Security:** Locked (Amit4455) 🔒
     """)
     
     st.markdown("---")
     if st.button("➕ Save Current Match to DB"):
-        # Automatically registers current match inputs into session memory so it updates future queries dynamically
         new_entry = {
             'season': 2025, 'venue': ground_name, 'batting_team': team_batting,
             'current_over': current_over, 'current_runs': current_runs, 
@@ -164,4 +192,4 @@ with col2:
         st.success("Saved to active database memory!")
 
 st.markdown("---")
-st.markdown("<p style='text-align: center; color: gray;'>Real-Data AI Cricket Predictor | Powered by 2021-2025 Archive</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Real-Data AI Cricket Predictor | 100% Secure & Private</p>", unsafe_allow_html=True)
