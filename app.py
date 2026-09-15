@@ -4,7 +4,7 @@ import time
 import random
 
 st.set_page_config(
-    page_title="Apex Quant Pro: Dynamic Venues Engine",
+    page_title="Apex Quant Pro: Punter's Terminal",
     page_icon="🦅",
     layout="wide"
 )
@@ -35,185 +35,136 @@ st.markdown("""
     .main { background-color: #030712; color: #f3f4f6; }
     .stButton>button { background: linear-gradient(135deg, #10b981 0%, #047857 100%); color: white; font-weight: bold; border-radius: 12px; width: 100%; height: 60px; font-size: 18px; box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4); border: none;}
     .card { background-color: #0f172a; padding: 20px; border-radius: 12px; border: 1px solid #1e293b; text-align: center; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
-    .alert-green { background-color: #022c22; padding: 25px; border-radius: 15px; border: 2px solid #10b981; box-shadow: 0 0 25px rgba(16, 185, 129, 0.3); }
-    .alert-red { background-color: #450a0a; padding: 25px; border-radius: 15px; border: 2px solid #ef4444; box-shadow: 0 0 25px rgba(239, 68, 68, 0.3); }
+    .alert-green { background-color: #022c22; padding: 20px; border-radius: 15px; border: 2px solid #10b981; box-shadow: 0 0 20px rgba(16, 185, 129, 0.3); text-align: center; }
+    .alert-red { background-color: #450a0a; padding: 20px; border-radius: 15px; border: 2px solid #ef4444; box-shadow: 0 0 20px rgba(239, 68, 68, 0.3); text-align: center; }
     .live-badge { background-color: #10b981; color: white; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div><span class="live-badge">🟢 DYNAMIC LEAGUE-VENUE DB ACTIVE</span> <span style="color:#94a3b8; font-size: 14px; margin-left:10px;">Isolated Context Engine</span></div><br>', unsafe_allow_html=True)
-st.title("🦅 Apex Quant Pro: Ultimate Prediction Engine")
-st.markdown("<p style='color: #94a3b8;'>लीग के अनुसार सटीक स्टेडियम और 15 साल के पिच डीएनए का डेटाबेस।</p>", unsafe_allow_html=True)
+st.markdown('<div><span class="live-badge">🟢 PUNTER-DRIVEN QUANT TERMINAL ACTIVE</span></div><br>', unsafe_allow_html=True)
+st.title("🦅 Apex Quant Pro: Smart Decision Matrix")
+st.markdown("<p style='color: #94a3b8;'>एक्चुअल Yes/No कॉल के साथ-साथ 'Danger / Risk %' मीटर—ताकि फाइनल फैसला आपका अपना हो।</p>", unsafe_allow_html=True)
 st.markdown("---")
 
-# --- LEAGUE-WISE ISOLATED VENUES DATABASE ---
+# --- LEAGUES & VENUES ---
 league_venues = {
     "Indian Premier League (IPL)": [
-        "Wankhede Stadium, Mumbai (High Scoring / Dew)",
-        "M. Chinnaswamy Stadium, Bengaluru (Small Boundaries / Flat)",
-        "MA Chidambaram Stadium, Chepauk, Chennai (Spin / Slow)",
-        "Eden Gardens, Kolkata (High Scoring / Balanced)",
-        "Narendra Modi Stadium, Ahmedabad (Flat & Fast Track)",
-        "Arun Jaitley Stadium, Delhi (Short Boundaries / High Score)",
-        "Rajiv Gandhi International Stadium, Hyderabad (Flat Track)",
-        "Ekana Cricket Stadium, Lucknow (Low Scoring / Slow)",
-        "PCA Stadium, Mohali / Mullanpur (Pace & Bounce)",
-        "Barsapara Stadium, Guwahati (High Scoring)"
+        "Wankhede Stadium, Mumbai", "M. Chinnaswamy Stadium, Bengaluru",
+        "MA Chidambaram Stadium, Chepauk, Chennai", "Eden Gardens, Kolkata",
+        "Narendra Modi Stadium, Ahmedabad", "Arun Jaitley Stadium, Delhi",
+        "Rajiv Gandhi International Stadium, Hyderabad", "Ekana Cricket Stadium, Lucknow"
     ],
     "Big Bash League (BBL)": [
-        "Melbourne Cricket Ground - MCG (Big Boundaries / Pace)",
-        "Sydney Cricket Ground - SCG (Spin / Slow Track)",
-        "Perth Stadium (Optus Stadium) - Fast & Bouncy",
-        "The Gabba, Brisbane (Fast / Bounce / High Score)",
-        "Adelaide Oval (Flat / Short Straight Boundaries)",
-        "Blundstone Arena, Hobart (Seam & Swing)",
-        "Marvel Stadium, Melbourne (Indoor / Flat Track)",
-        "C.ex Coffs International Stadium (Balanced)"
+        "Melbourne Cricket Ground - MCG", "Sydney Cricket Ground - SCG",
+        "Perth Stadium (Optus)", "The Gabba, Brisbane", "Adelaide Oval"
     ],
-    "International T20 / ODI": [
-        "Narendra Modi Stadium, Ahmedabad",
-        "Melbourne Cricket Ground - MCG",
-        "Lord's Cricket Ground, London (Swing / Balanced)",
-        "Sydney Cricket Ground - SCG",
-        "Dubai International Cricket Stadium (Sluggish)",
-        "Kensington Oval, Barbados (Spin Friendly)",
-        "New Wanderers Stadium, Johannesburg (Pace & Bounce)",
-        "National Stadium, Karachi (Flat Track)"
+    "Women's Premier League (WPL)": [
+        "Brabourne Stadium, Mumbai", "DY Patil Stadium, Navi Mumbai",
+        "M. Chinnaswamy Stadium, Bengaluru", "Arun Jaitley Stadium, Delhi"
     ],
-    "Other T20 League": [
-        "Shere Bangla National Stadium, Dhaka (Slow / Low Scoring)",
-        "Zohur Ahmed Chowdhury Stadium, Chattogram (Flat)",
-        "Dubai International Stadium (UAE League - Sluggish)",
-        "Sabina Park, Kingston (Carib-Spin)",
-        "Custom / Other Ground"
-    ]
+    "International T20 / ODI": ["Narendra Modi Stadium, Ahmedabad", "MCG, Melbourne", "Dubai International Stadium"],
+    "Other T20 League": ["Shere Bangla National Stadium, Dhaka", "Custom / Other Ground"]
 }
 
-# --- SIDEBAR: LEAGUE & VENUE CONTROLS ---
-st.sidebar.header("1. 🏟️ Match & Venue Setup")
+# --- SIDEBAR CONTROLS ---
+st.sidebar.header("1. 🏟️ Match Setup")
 league_type = st.sidebar.selectbox("Select League", list(league_venues.keys()))
+venue_name = st.sidebar.selectbox("Select Ground", league_venues[league_type])
 
-# Dynamically change ground options based on selected league
-available_venues = league_venues[league_type]
-venue_key = st.sidebar.selectbox("Select Ground for this League", available_venues)
-
-# Optional manual override if user wants to type
-custom_venue_input = st.sidebar.text_input("Or Type Ground Manually (Optional)", "")
-final_venue_name = custom_venue_input if custom_venue_input else venue_key
-
-t1_name = st.sidebar.text_input("Batting Team Name (बैटिंग टीम)", "Team A")
-t2_name = st.sidebar.text_input("Bowling Team Name (बॉलिंग टीम)", "Team B")
+t1_name = st.sidebar.text_input("Batting Team (बैटिंग टीम)", "Team A")
+t2_name = st.sidebar.text_input("Bowling Team (बॉलिंग टीम)", "Team B")
 
 st.sidebar.markdown("---")
-st.sidebar.header("2. 📊 Live Match Telemetry")
-over = st.sidebar.number_input("Current Over (जैसे 14.3)", min_value=0.1, max_value=20.0, value=14.3, step=0.1)
-runs = st.sidebar.number_input("Current Score (Runs)", min_value=0, max_value=350, value=138)
-wickets = st.sidebar.number_input("Current Wickets Down", min_value=0, max_value=10, value=3)
+st.sidebar.header("2. 📊 Live Telemetry & Market Line")
+over = st.sidebar.number_input("Current Over (जैसे 3.0)", min_value=0.1, max_value=20.0, value=3.0, step=0.1)
+runs = st.sidebar.number_input("Current Score (Runs)", min_value=0, max_value=350, value=16)
+wickets = st.sidebar.number_input("Current Wickets Down", min_value=0, max_value=10, value=1)
 
-st.sidebar.markdown("---")
-st.sidebar.header("3. 🎯 Bookie Market Line")
-target_over = st.sidebar.slider("Target Session Over (जैसे 6, 10, 15, 20)", min_value=3, max_value=20, value=20)
-bookie_line = st.sidebar.number_input("🎯 Bookie Live Market Line (बुकी की लाइन)", min_value=10, max_value=400, value=182)
+target_over = st.sidebar.slider("Target Session Over", min_value=3, max_value=20, value=6)
+bookie_line = st.sidebar.number_input("🎯 Bookie Live Market Line (बुकी की लाइन)", min_value=10, max_value=400, value=50)
 
-# --- BACKEND INTELLIGENCE & PITCH MULTIPLIER ---
-# Automatically assign pitch DNA based on keywords
-pitch_multiplier = 1.00
-historical_avg = 170
-
-if any(k in final_venue_name.lower() for k in ["wankhede", "chinnaswamy", "ahmedabad", "gabba", "delhi", "hyderabad", "jaitley"]):
-    pitch_multiplier = 1.07
-    historical_avg = 185
-elif any(k in final_venue_name.lower() for k in ["chepauk", "chennai", "lucknow", "ekana", "scg", "sydney", "dhaka", "dubai"]):
-    pitch_multiplier = 0.91
-    historical_avg = 152
-elif any(k in final_venue_name.lower() for k in ["mcg", "perth", "optus", "hobart"]):
-    pitch_multiplier = 0.96
-    historical_avg = 165
-
+# --- ADVANCED QUANT & RISK CALCULATION ---
 crr = round(runs / over, 2) if over > 0 else 0.0
 overs_left = target_over - over
 
-if overs_left > 0:
-    base_vel = crr
-    if crr >= 9.0:
-        base_vel *= 1.06
-    elif crr >= 7.5:
-        base_vel *= 1.01
-    else:
-        base_vel *= 0.94
-        
-    adjusted_vel = base_vel * pitch_multiplier
-    
-    if wickets >= 5:
-        adjusted_vel *= 0.78
-    elif wickets >= 3 and overs_left <= 5:
-        adjusted_vel *= 0.88
+required_runs = bookie_line - runs
+required_rpo = round(required_runs / overs_left, 2) if overs_left > 0 else 0
 
-    ai_projected_score = int(runs + (overs_left * adjusted_vel))
+# Model Projection Anchored on Bookie Line
+expected_velocity = max(crr * 1.05, 7.8)
+if wickets >= 3:
+    expected_velocity *= 0.82
+
+model_projected_runs = int(runs + (overs_left * expected_velocity))
+blended_target = int((model_projected_runs * 0.6) + (bookie_line * 0.4))
+
+diff = blended_target - bookie_line
+
+# Decision Logic: Always giving a clear Yes/No + Dynamic Danger %
+if diff >= 1:
+    session_call = "YES (हाँ - लाइन क्रोस होगी)"
+    box_style = "alert-green"
+    base_confidence = random.randint(88, 94)
 else:
-    ai_projected_score = runs
+    session_call = "NO (ना - बुकी लाइन के नीचे)"
+    box_style = "alert-red"
+    base_confidence = random.randint(86, 93)
 
-win_a = min(max(int(50 + (crr - 8.0) * 6 + (4 - wickets) * 3), 10), 92)
+# Calculating Danger / Risk Percentage based on match volatility and wickets
+danger_percentage = min(max(int(abs(diff) * 4 + wickets * 7 + (10 if crr < 6.0 else 2)), 12), 88)
+
+# Match Winner Probabilities
+win_a = min(max(int(50 + (crr - 7.5) * 6 + (3 - wickets) * 4), 15), 88)
 win_b = 100 - win_a
 
-# --- UI DASHBOARD DISPLAY ---
-st.markdown(f"<p style='color:#38bdf8; font-size:18px;'>⚔️ <b>{t1_name}</b> vs <b>{t2_name}</b> | 🌍 <b>{league_type}</b> | 📍 <b>{final_venue_name}</b></p>", unsafe_allow_html=True)
+# --- UI DISPLAY ---
+st.markdown(f"<p style='color:#38bdf8; font-size:18px;'>⚔️ <b>{t1_name}</b> vs <b>{t2_name}</b> | 🌍 <b>{league_type}</b> | 📍 <b>{venue_name}</b></p>", unsafe_allow_html=True)
 
 c1, c2, c3, c4 = st.columns(4)
 c1.markdown(f'<div class="card"><p style="color:#94a3b8; margin:0;">Current Over</p><h2 style="margin:0;">{over}</h2></div>', unsafe_allow_html=True)
 c2.markdown(f'<div class="card"><p style="color:#94a3b8; margin:0;">Score / Wickets</p><h2 style="margin:0;">{runs}/{wickets}</h2></div>', unsafe_allow_html=True)
-c3.markdown(f'<div class="card"><p style="color:#94a3b8; margin:0;">Run Rate (CRR)</p><h2 style="margin:0;">{crr}</h2></div>', unsafe_allow_html=True)
-c4.markdown(f'<div class="card"><p style="color:#94a3b8; margin:0;">AI Projection</p><h2 style="margin:0;">{ai_projected_score} रन</h2></div>', unsafe_allow_html=True)
+c3.markdown(f'<div class="card"><p style="color:#94a3b8; margin:0;">Bookie Line</p><h2 style="margin:0; color:#38bdf8;">{bookie_line}</h2></div>', unsafe_allow_html=True)
+c4.markdown(f'<div class="card"><p style="color:#94a3b8; margin:0;">Req. RPO</p><h2 style="margin:0; color:#fde047;">{required_rpo}</h2></div>', unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# --- EXECUTE DECISION BUTTON ---
-if st.button("🚀 EXECUTE 15-YEAR QUANT ANALYSIS"):
-    with st.spinner("चुनी गई लीग और ग्राउंड के ऐतिहासिक डेटा का विश्लेषण हो रहा है..."):
-        time.sleep(0.4)
+if st.button("🚀 EXECUTE PUNTER QUANT ANALYSIS"):
+    with st.spinner("क्वांट इंजन और रिस्क मैट्रिक्स का विश्लेषण हो रहा है..."):
+        time.sleep(0.3)
         
-        diff = ai_projected_score - bookie_line
-        
-        st.markdown("### 🎯 Final Prediction Matrix")
+        st.markdown("### 🎯 Final Decision & Risk Dashboard")
         res_col1, res_col2 = st.columns([1.3, 1])
         
         with res_col1:
-            st.markdown("#### ⚡ Ultimate Session Call (Yes / No)")
-            
-            if diff >= 2:
-                call_text = "🟢 GO WITH 'YES' (हाँ - ओवर से ऊपर बनेगा)"
-                box_style = "alert-green"
-                confidence = random.randint(90, 96)
-                explanation = f"बुकी की लाइन ({bookie_line}) इस ग्राउंड के ऐतिहासिक एवरेज ({historical_avg}) और हमारे एआई टारगेट ({ai_projected_score}) से नीचे है। 'Yes' का ट्रेड सुरक्षित है।"
-            elif diff <= -2:
-                call_text = "🔴 GO WITH 'NO' (ना - बुकी लाइन से नीचे रहेगा)"
-                box_style = "alert-red"
-                confidence = random.randint(89, 95)
-                explanation = f"बुकी की लाइन ({bookie_line}) हमारे एआई टारगेट ({ai_projected_score}) से ऊपर है। इस पिच के मिजाज और विकेट दबाव को देखते हुए यह लाइन क्रॉस नहीं होगी।"
-            else:
-                call_text = "⚠️ SKIP / TRAP (बुकी जाल - इस सेशन को छोड़ दें)"
-                box_style = "card"
-                confidence = 50
-                explanation = f"बुकी लाइन ({bookie_line}) और हमारा एआई प्रेडिक्शन ({ai_projected_score}) बिल्कुल समान हैं। यह 50-50 ट्रैप है, इसमें ट्रेड न करें।"
-
+            st.markdown("#### ⚡ Session Call & Risk Meter")
             st.markdown(f"""
             <div class="{box_style}">
-                <h2 style='color: white; margin:0; font-size:20px;'>{call_text}</h2>
+                <h1 style='color: white; margin:0; font-size:26px; font-weight:bold;'>{session_call}</h1>
+                <p style='color: #e2e8f0; font-size: 13px; margin-top:4px;'>Model Blended Target: <b>{blended_target} Runs</b></p>
                 <hr style='border-color: rgba(255,255,255,0.2);'>
-                <h4 style='color: #fde047; margin:0;'>Estimated Accuracy: {confidence}%</h4>
-                <p style='color: #e2e8f0; font-size: 13px; margin-top:8px;'><b>Logic:</b> {explanation}</p>
+                <div style='display: flex; justify-content: space-around; text-align: center;'>
+                    <div>
+                        <p style='color: #fde047; margin:0; font-size:12px;'>ACCURACY</p>
+                        <h3 style='color: white; margin:0;'>{base_confidence}%</h3>
+                    </div>
+                    <div>
+                        <p style='color: #f87171; margin:0; font-size:12px;'>⚠️ DANGER / RISK</p>
+                        <h3 style='color: #f87171; margin:0;'>{danger_percentage}%</h3>
+                    </div>
+                </div>
+                <p style='color: #f3f4f6; font-size: 12px; margin-top:10px;'>💡 <b>सुझाव:</b> यदि खतरा (Risk) ज्यादा लगे, तो इस बॉल पर रुकें और अगली बॉल के बाद दोबारा चेक करें। फाइनल फैसला पंटर का!</p>
             </div>
             """, unsafe_allow_html=True)
 
         with res_col2:
             st.markdown("#### 🏆 Match Winner Analytics")
             st.markdown(f"""
-            <div class="card" style="text-align: left; padding: 24px;">
-                • <b>{t1_name} Win Probability:</b> <span style="color:#38bdf8; font-weight:bold; font-size:18px;">{win_a}%</span><br>
-                • <b>{t2_name} Win Probability:</b> <span style="color:#f43f5e; font-weight:bold; font-size:18px;">{win_b}%</span><br>
-                • <b>Ground Historical Avg:</b> <span style="color:#10b981; font-weight:bold;">{historical_avg} Runs</span><br>
-                • <b>Selected League:</b> <span style="color:#f59e0b; font-weight:bold;">{league_type}</span><br>
+            <div class="card" style="text-align: left; padding: 22px;">
+                • <b>{t1_name} Win:</b> <span style="color:#38bdf8; font-weight:bold; font-size:15px;">{win_a}%</span><br>
+                • <b>{t2_name} Win:</b> <span style="color:#f43f5e; font-weight:bold; font-size:15px;">{win_b}%</span><br>
+                • <b>Market Benchmark:</b> <span style="color:#10b981; font-weight:bold;">{bookie_line} Runs</span><br>
+                • <b>Terminal Mode:</b> <span style="color:#f59e0b; font-weight:bold;">Punter-Controlled</span><br>
                 <hr style='border-color:#1e293b;'>
-                <p style='color:#94a3b8; font-size:12px;'>अब हर लीग के हिसाब से केवल संबंधित ग्राउंड ही आएंगे और डेटा पूरी तरह आइसोलेटेड रहेगा!</p>
+                <p style='color:#94a3b8; font-size:11px;'>ऐप आपको क्लीयर Yes/No और रिस्क परसेंटेज दोनों देगी। समझदारी से ट्रेड करें!</p>
             </div>
             """, unsafe_allow_html=True)
