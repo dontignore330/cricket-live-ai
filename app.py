@@ -232,7 +232,25 @@ def load_history(selected_league):
     df = pd.read_sql_query(q, conn, params=(selected_league,))
     if df.empty:
         return df
-    df["ball_pos"] = df["ball_no"].apply(balls_from_over_ball).astype(int)
+    # Historical files can contain illegal-delivery labels such as 4.7 or 4.10.
+    # Those labels are valid as historical sequence markers even though they must
+    # never be accepted from the user's live input. Keep strict validation for UI
+    # input, but parse historical labels without crashing.
+    def historical_ball_position(value):
+        text = str(value).strip()
+        try:
+            whole_s, ball_s = text.split(".", 1)
+            whole = int(whole_s)
+            ball = int(ball_s)
+            if whole < 0 or ball < 0:
+                raise ValueError
+            return whole * 6 + ball
+        except (ValueError, TypeError):
+            return np.nan
+
+    df["ball_pos"] = df["ball_no"].apply(historical_ball_position)
+    df = df.dropna(subset=["ball_pos"]).copy()
+    df["ball_pos"] = df["ball_pos"].astype(int)
     df["runs"] = pd.to_numeric(df["runs"], errors="coerce").fillna(0).astype(int)
     df["wickets"] = pd.to_numeric(df["wickets"], errors="coerce").fillna(0).astype(int)
     df["cum_runs"] = df.groupby(["match_id","innings_no"], sort=False)["runs"].cumsum()
