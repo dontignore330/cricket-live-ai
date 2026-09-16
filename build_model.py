@@ -2,7 +2,10 @@ import os
 import json
 import zipfile
 import urllib.request
+import urllib.error
 import sqlite3
+import time
+
 
 URLS = {
     "IPL": "https://cricsheet.org/downloads/ipl_json.zip",
@@ -10,10 +13,12 @@ URLS = {
     "WBBL": "https://cricsheet.org/downloads/wbb_json.zip",
 }
 
+
 DB = "cricket_history.db"
 
 
 def download(league):
+
     os.makedirs("data", exist_ok=True)
 
     path = f"data/{league.lower()}_json.zip"
@@ -23,21 +28,56 @@ def download(league):
         URLS[league]
     )
 
-    print("Downloading", league)
-    print("Download URL:", url)
+    print("")
+    print("==============================")
+    print("Downloading:", league)
+    print("URL:", url)
+    print("==============================")
+
+    # Remove old/broken file
+    if os.path.exists(path):
+        os.remove(path)
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 "
+            "(KHTML, like Gecko) "
+            "Chrome/131.0 Safari/537.36"
+        ),
+        "Accept": (
+            "application/zip,"
+            "application/octet-stream,"
+            "application/x-zip-compressed,"
+            "*/*"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "close",
+    }
+
+    request = urllib.request.Request(
+        url,
+        headers=headers,
+        method="GET"
+    )
 
     try:
-        request = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0"
-            }
-        )
 
         with urllib.request.urlopen(
             request,
-            timeout=180
+            timeout=300
         ) as response:
+
+            final_url = response.geturl()
+            status = response.status
+            content_type = response.headers.get(
+                "Content-Type",
+                ""
+            )
+
+            print("HTTP status:", status)
+            print("Final URL:", final_url)
+            print("Content-Type:", content_type)
 
             data = response.read()
 
@@ -46,23 +86,42 @@ def download(league):
             len(data)
         )
 
-        # Check whether downloaded data is really a ZIP.
+        # A normal ZIP file starts with PK.
         if not data.startswith(b"PK"):
+
+            print("")
             print(
-                "ERROR: Downloaded file is NOT a ZIP file."
+                "ERROR: Server returned something other than ZIP."
             )
 
             print(
-                "First bytes:",
-                data[:100]
+                "First 200 bytes:"
+            )
+
+            print(
+                repr(data[:200])
             )
 
             raise RuntimeError(
-                f"{league} download did not return a valid ZIP file."
+                f"{league} server returned HTML/non-ZIP data."
             )
 
-        with open(path, "wb") as file:
+        # Save ZIP
+        with open(
+            path,
+            "wb"
+        ) as file:
+
             file.write(data)
+
+        # Extra ZIP validation
+        if not zipfile.is_zipfile(path):
+
+            os.remove(path)
+
+            raise RuntimeError(
+                f"{league} downloaded file failed ZIP validation."
+            )
 
         print(
             league,
@@ -70,6 +129,29 @@ def download(league):
         )
 
         return path
+
+    except urllib.error.HTTPError as error:
+
+        print(
+            "HTTP ERROR:",
+            error.code,
+            error.reason
+        )
+
+        raise RuntimeError(
+            f"Could not download {league}: HTTP {error.code}"
+        )
+
+    except urllib.error.URLError as error:
+
+        print(
+            "URL ERROR:",
+            error.reason
+        )
+
+        raise RuntimeError(
+            f"Could not download {league}: {error.reason}"
+        )
 
     except Exception as error:
 
@@ -83,6 +165,12 @@ def download(league):
 
 def build():
 
+    print("")
+    print("==============================")
+    print("STARTING CRICKET DATA BUILD")
+    print("==============================")
+
+    # Delete old database
     if os.path.exists(DB):
         os.remove(DB)
 
@@ -142,25 +230,49 @@ def build():
 
     for league in URLS:
 
-        print("\nProcessing", league)
+        print("")
+        print("==============================")
+        print("PROCESSING", league)
+        print("==============================")
 
         zip_path = download(league)
 
-        with zipfile.ZipFile(zip_path) as archive:
+        print(
+            "Opening ZIP:",
+            zip_path
+        )
 
-            for filename in archive.namelist():
+        with zipfile.ZipFile(
+            zip_path,
+            "r"
+        ) as archive:
+
+            filenames = archive.namelist()
+
+            print(
+                "Files in ZIP:",
+                len(filenames)
+            )
+
+            for filename in filenames:
 
                 if not filename.endswith(".json"):
                     continue
 
                 try:
+
                     match = json.loads(
                         archive.read(filename)
                     )
+
                 except Exception:
+
                     continue
 
-                info = match.get("info", {})
+                info = match.get(
+                    "info",
+                    {}
+                )
 
                 venue = info.get(
                     "venue",
@@ -240,8 +352,14 @@ def build():
 
                             runs = int(
                                 delivery
-                                .get("runs", {})
-                                .get("total", 0)
+                                .get(
+                                    "runs",
+                                    {}
+                                )
+                                .get(
+                                    "total",
+                                    0
+                                )
                             )
 
                             total_runs += runs
@@ -259,7 +377,7 @@ def build():
                             )
 
                             # Wides and no-balls
-                            # do not consume a legal ball.
+                            # are not legal balls.
                             legal = not (
                                 extras.get(
                                     "wides",
@@ -323,19 +441,13 @@ def build():
 
                         delivery_count += 1
 
-                    # Store every possible future legal-ball target.
-                    #
-                    # Example:
-                    #
-                    # 2.3 -> 5.2
-                    # 7.1 -> 11.4
-                    # 15.5 -> 19.2
-
+                    # Maximum 120 legal balls
                     max_ball = min(
                         120,
                         rows[-1]["ball_no"]
                     )
 
+                    # Create historical future-target samples
                     for row in rows:
 
                         current_ball = row[
@@ -400,7 +512,7 @@ def build():
 
                             sample_count += 1
 
-                        # Historical match result
+                        # Match winner information
                         if winner:
 
                             cursor.execute(
@@ -435,6 +547,7 @@ def build():
 
                             win_count += 1
 
+                    # Commit periodically
                     if delivery_count % 100000 == 0:
 
                         connection.commit()
@@ -443,10 +556,15 @@ def build():
                             "Deliveries:",
                             delivery_count,
                             "Samples:",
-                            sample_count
+                            sample_count,
+                            "Win states:",
+                            win_count
                         )
 
-    # Indexes make the live app much faster.
+    print("")
+    print("==============================")
+    print("CREATING INDEXES")
+    print("==============================")
 
     cursor.execute(
         """
@@ -500,12 +618,14 @@ def build():
 
     connection.close()
 
-    print("\n==============================")
+    print("")
+    print("==============================")
     print("BUILD COMPLETE")
     print("==============================")
     print("Deliveries:", delivery_count)
     print("Samples:", sample_count)
     print("Win states:", win_count)
+    print("==============================")
 
 
 if __name__ == "__main__":
