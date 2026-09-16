@@ -1,319 +1,944 @@
+import os
+import sqlite3
 import streamlit as st
 import pandas as pd
-import math, os
+import numpy as np
+
+
+DB = "cricket_history.db"
+
+
+# -----------------------------
+# PAGE
+# -----------------------------
 
 st.set_page_config(
-    page_title="Apex Quant Pro",
-    page_icon="🦅",
+    page_title="Apex Quant Cricket AI",
+    page_icon="🏏",
     layout="wide"
 )
 
-st.title("🦅 Apex Quant Pro — Multi-League Cricket Analytics")
-st.caption("IPL • BBL • WBBL | Statistical projection & historical benchmarking")
 
-LEAGUES = {
-    "IPL": {
-        "file": "ipl_features.csv",
-        "full": "Indian Premier League"
-    },
-    "BBL": {
-        "file": "bbl_features.csv",
-        "full": "Big Bash League"
-    },
-    "WBBL": {
-        "file": "wbbl_features.csv",
-        "full": "Women's Big Bash League"
-    },
-}
+# -----------------------------
+# PASSWORD
+# -----------------------------
+
+APP_PASSWORD = os.getenv("APP_PASSWORD", "")
+
+if APP_PASSWORD:
+
+    password = st.text_input(
+        "Enter Password",
+        type="password"
+    )
+
+    if password != APP_PASSWORD:
+        st.warning("🔒 Private testing mode")
+        st.stop()
 
 
-@st.cache_data
-def load_data(path):
-    if os.path.exists(path):
-        return pd.read_csv(path)
-    return pd.DataFrame()
+# -----------------------------
+# TITLE
+# -----------------------------
+
+st.title("🏏 Apex Quant Cricket AI")
+
+st.caption(
+    "Historical cricket analytics • IPL • BBL • WBBL"
+)
+
+
+# -----------------------------
+# DATABASE
+# -----------------------------
+
+@st.cache_resource
+def get_connection():
+
+    if not os.path.exists(DB):
+        return None
+
+    return sqlite3.connect(
+        DB,
+        check_same_thread=False
+    )
+
+
+conn = get_connection()
+
+
+if conn is None:
+
+    st.error(
+        "Historical database is not available yet."
+    )
+
+    st.info(
+        "Render ko build_model.py run karke database banana hoga."
+    )
+
+    st.stop()
+
+
+# -----------------------------
+# HELPERS
+# -----------------------------
+
+def valid_ball(value):
+
+    try:
+
+        over, ball = value.split(".")
+
+        over = int(over)
+        ball = int(ball)
+
+        if over < 0:
+            return False
+
+        if ball < 0 or ball > 5:
+            return False
+
+        if over > 19:
+            return False
+
+        return True
+
+    except:
+
+        return False
+
+
+def ball_to_number(value):
+
+    over, ball = value.split(".")
+
+    return int(over) * 6 + int(ball)
+
+
+def number_to_ball(number):
+
+    over = number // 6
+    ball = number % 6
+
+    return f"{over}.{ball}"
+
+
+# -----------------------------
+# SIDEBAR
+# -----------------------------
+
+st.sidebar.header("Match Information")
 
 
 league = st.sidebar.selectbox(
-    "1. League / Series",
-    list(LEAGUES)
+    "League",
+    [
+        "IPL",
+        "BBL",
+        "WBBL"
+    ]
 )
 
-df = load_data(LEAGUES[league]["file"])
 
-teams = sorted(
-    set(df.get("batting_team", pd.Series(dtype=str)).dropna())
-    |
-    set(df.get("bowling_team", pd.Series(dtype=str)).dropna())
+innings = st.sidebar.selectbox(
+    "Innings",
+    [
+        1,
+        2
+    ]
 )
 
-venues = sorted(
-    df.get("venue", pd.Series(dtype=str)).dropna().unique()
+
+# -----------------------------
+# TEAM LIST
+# -----------------------------
+
+@st.cache_data
+def get_teams(league_name):
+
+    query = """
+        SELECT DISTINCT batting_team
+        FROM samples
+        WHERE league = ?
+        ORDER BY batting_team
+    """
+
+    df = pd.read_sql_query(
+        query,
+        conn,
+        params=(league_name,)
+    )
+
+    return df["batting_team"].tolist()
+
+
+teams = get_teams(league)
+
+
+if not teams:
+
+    st.error(
+        "Team data nahi mili."
+    )
+
+    st.stop()
+
+
+batting_team = st.sidebar.selectbox(
+    "Batting Team",
+    teams
 )
 
-bat = st.sidebar.selectbox(
-    "2. Batting Team",
-    teams if teams else ["No data"]
+
+# -----------------------------
+# BOWLING TEAMS
+# -----------------------------
+
+@st.cache_data
+def get_bowling_teams(
+    league_name,
+    batting
+):
+
+    query = """
+        SELECT DISTINCT bowling_team
+        FROM samples
+        WHERE league = ?
+        AND batting_team = ?
+        ORDER BY bowling_team
+    """
+
+    df = pd.read_sql_query(
+        query,
+        conn,
+        params=(
+            league_name,
+            batting
+        )
+    )
+
+    return df["bowling_team"].tolist()
+
+
+bowling_teams = get_bowling_teams(
+    league,
+    batting_team
 )
 
-bowl = st.sidebar.selectbox(
-    "3. Bowling Team",
-    [x for x in teams if x != bat] or ["No data"]
-)
+
+if bowling_teams:
+
+    bowling_team = st.sidebar.selectbox(
+        "Bowling Team",
+        bowling_teams
+    )
+
+else:
+
+    bowling_team = st.sidebar.text_input(
+        "Bowling Team"
+    )
+
+
+# -----------------------------
+# VENUE
+# -----------------------------
+
+@st.cache_data
+def get_venues(league_name):
+
+    query = """
+        SELECT DISTINCT venue
+        FROM samples
+        WHERE league = ?
+        AND venue != ''
+        ORDER BY venue
+    """
+
+    df = pd.read_sql_query(
+        query,
+        conn,
+        params=(league_name,)
+    )
+
+    return df["venue"].tolist()
+
+
+venues = get_venues(league)
+
+
+venue_options = [
+    "Any Venue"
+] + venues
+
 
 venue = st.sidebar.selectbox(
-    "4. Ground",
-    venues if venues else ["No data"]
+    "Venue",
+    venue_options
 )
 
-innings = st.sidebar.radio(
-    "5. Innings",
-    ["1st innings", "2nd innings"]
+
+# -----------------------------
+# CURRENT STATE
+# -----------------------------
+
+st.subheader("📍 Current Match State")
+
+
+col1, col2, col3, col4 = st.columns(4)
+
+
+with col1:
+
+    current_ball_text = st.text_input(
+        "Current Over.Ball",
+        value="2.3"
+    )
+
+
+with col2:
+
+    current_runs = st.number_input(
+        "Current Runs",
+        min_value=0,
+        max_value=400,
+        value=20
+    )
+
+
+with col3:
+
+    current_wickets = st.number_input(
+        "Wickets",
+        min_value=0,
+        max_value=10,
+        value=1
+    )
+
+
+with col4:
+
+    target_ball_text = st.text_input(
+        "Target Over.Ball",
+        value="5.2"
+    )
+
+
+# -----------------------------
+# VALIDATION
+# -----------------------------
+
+if not valid_ball(current_ball_text):
+
+    st.error(
+        "Current Over.Ball invalid hai. Example: 2.3, 7.1, 15.5"
+    )
+
+    st.stop()
+
+
+if not valid_ball(target_ball_text):
+
+    st.error(
+        "Target Over.Ball invalid hai. Example: 5.2, 11.4, 19.2"
+    )
+
+    st.stop()
+
+
+current_ball = ball_to_number(
+    current_ball_text
 )
 
-over_raw = st.sidebar.number_input(
-    "Current over.ball (e.g. 8.2)",
-    min_value=0.0,
-    max_value=20.5,
-    value=3.0,
-    step=0.1
+target_ball = ball_to_number(
+    target_ball_text
 )
 
-runs = st.sidebar.number_input(
-    "Current runs",
+
+if target_ball <= current_ball:
+
+    st.error(
+        "Target ball current ball se aage honi chahiye."
+    )
+
+    st.stop()
+
+
+if current_wickets >= 10:
+
+    st.warning(
+        "10 wickets gir chuke hain."
+    )
+
+    st.stop()
+
+
+# -----------------------------
+# EXACT LEGAL BALL DIFFERENCE
+# -----------------------------
+
+remaining_legal_balls = (
+    target_ball - current_ball
+)
+
+
+st.info(
+    f"🎯 Analysis window: "
+    f"{current_ball_text} → {target_ball_text}  "
+    f"= **{remaining_legal_balls} legal balls**"
+)
+
+
+# -----------------------------
+# OPTIONAL MARKET LINE
+# -----------------------------
+
+st.subheader("📊 Optional Market Signal")
+
+
+market_line = st.number_input(
+    "Current session / market line (optional)",
     min_value=0,
-    max_value=350,
-    value=20
-)
-
-wickets = st.sidebar.number_input(
-    "Wickets down",
-    min_value=0,
-    max_value=10,
-    value=1
-)
-
-target = st.sidebar.number_input(
-    "Target (2nd innings only)",
-    min_value=0,
-    max_value=400,
-    value=0
-)
-
-window = st.sidebar.slider(
-    "Future session length (overs)",
-    1,
-    10,
-    5
-)
-
-market = st.sidebar.number_input(
-    "Market/session line (optional)",
-    min_value=0.0,
-    value=0.0
+    max_value=250,
+    value=0,
+    help="Agar available ho to enter karo. Nahi ho to 0 rehne do."
 )
 
 
-def ball_to_decimal(x):
-    whole = int(x)
-    ball = round((x - whole) * 10)
-    ball = max(0, min(5, ball))
-    return whole + ball / 6
+# -----------------------------
+# HISTORICAL QUERY
+# -----------------------------
+
+def get_historical_data():
+
+    conditions = [
+        "league = ?",
+        "target_ball = ?"
+    ]
+
+    params = [
+        league,
+        target_ball
+    ]
+
+    # Similar wicket states
+    conditions.append(
+        "wickets BETWEEN ? AND ?"
+    )
+
+    low_wickets = max(
+        0,
+        int(current_wickets) - 1
+    )
+
+    high_wickets = min(
+        9,
+        int(current_wickets) + 1
+    )
+
+    params.extend([
+        low_wickets,
+        high_wickets
+    ])
+
+    # Team match
+    conditions.append(
+        "batting_team = ?"
+    )
+
+    params.append(
+        batting_team
+    )
+
+    # Bowling team
+    if bowling_team:
+
+        conditions.append(
+            "bowling_team = ?"
+        )
+
+        params.append(
+            bowling_team
+        )
+
+    # Venue
+    if venue != "Any Venue":
+
+        conditions.append(
+            "venue = ?"
+        )
+
+        params.append(
+            venue
+        )
+
+    where = " AND ".join(
+        conditions
+    )
+
+    query = f"""
+        SELECT
+            runs_to_target,
+            current_runs,
+            wickets
+        FROM samples
+        WHERE {where}
+    """
+
+    return pd.read_sql_query(
+        query,
+        conn,
+        params=params
+    )
 
 
-ov = ball_to_decimal(over_raw)
+data = get_historical_data()
 
-phase = (
-    "Powerplay"
-    if ov < 6
-    else ("Middle" if ov < 15 else "Death")
+
+# -----------------------------
+# FALLBACK QUERY
+# -----------------------------
+
+if len(data) < 20:
+
+    conditions = [
+        "league = ?",
+        "target_ball = ?",
+        "wickets BETWEEN ? AND ?"
+    ]
+
+    params = [
+        league,
+        target_ball,
+        low_wickets,
+        high_wickets
+    ]
+
+    query = """
+        SELECT
+            runs_to_target,
+            current_runs,
+            wickets
+        FROM samples
+        WHERE league = ?
+        AND target_ball = ?
+        AND wickets BETWEEN ? AND ?
+    """
+
+    data = pd.read_sql_query(
+        query,
+        conn,
+        params=params
+    )
+
+
+# -----------------------------
+# VERY BROAD FALLBACK
+# -----------------------------
+
+if len(data) < 20:
+
+    query = """
+        SELECT
+            runs_to_target,
+            current_runs,
+            wickets
+        FROM samples
+        WHERE league = ?
+        AND target_ball = ?
+    """
+
+    data = pd.read_sql_query(
+        query,
+        conn,
+        params=(
+            league,
+            target_ball
+        )
+    )
+
+
+# -----------------------------
+# MODEL
+# -----------------------------
+
+if len(data) == 0:
+
+    st.warning(
+        "Is exact target ball ke liye historical sample nahi mila."
+    )
+
+    st.stop()
+
+
+runs = pd.to_numeric(
+    data["runs_to_target"],
+    errors="coerce"
+).dropna()
+
+
+# Remove impossible negative values
+runs = runs[runs >= 0]
+
+
+if len(runs) == 0:
+
+    st.warning(
+        "Us state ke liye valid historical data nahi mila."
+    )
+
+    st.stop()
+
+
+# Historical statistics
+median_runs = float(
+    runs.median()
 )
 
-remaining = max(0, 20 - ov)
+q25 = float(
+    runs.quantile(0.25)
+)
 
-crr = runs / ov if ov else 0
+q75 = float(
+    runs.quantile(0.75)
+)
+
+q10 = float(
+    runs.quantile(0.10)
+)
+
+q90 = float(
+    runs.quantile(0.90)
+)
+
+
+# -----------------------------
+# CURRENT SCORE ADJUSTMENT
+# -----------------------------
+
+# Historical sample ka average current score
+historical_current_score = float(
+    data["current_runs"].median()
+)
+
+
+score_adjustment = (
+    float(current_runs)
+    - historical_current_score
+)
+
+
+# Conservative adjustment.
+# Current score ko full future runs me directly
+# add nahi karte.
+adjustment = score_adjustment * 0.08
+
+
+model_estimate = (
+    median_runs + adjustment
+)
+
+
+# -----------------------------
+# MARKET BLEND
+# -----------------------------
+
+if market_line > 0:
+
+    # Market ko blind truth nahi maana ja raha.
+    # Sirf small signal ke roop me blend.
+    model_estimate = (
+        model_estimate * 0.75
+        +
+        market_line * 0.25
+    )
+
+
+# -----------------------------
+# WHOLE RUN
+# -----------------------------
+
+estimate = int(
+    round(model_estimate)
+)
+
+
+# Compact 2-3 run display zone
+display_low = max(
+    0,
+    estimate - 1
+)
+
+display_high = (
+    estimate + 1
+)
+
+
+# -----------------------------
+# OUTPUT
+# -----------------------------
+
+st.subheader("🎯 Projection")
+
+
+c1, c2, c3 = st.columns(3)
+
+
+with c1:
+
+    st.metric(
+        "Estimated Runs",
+        f"{estimate}"
+    )
+
+
+with c2:
+
+    st.metric(
+        "Compact Zone",
+        f"{display_low} – {display_high}"
+    )
+
+
+with c3:
+
+    st.metric(
+        "Historical Samples",
+        f"{len(runs):,}"
+    )
+
+
+# -----------------------------
+# HISTORICAL DISTRIBUTION
+# -----------------------------
+
+st.subheader(
+    "📚 Historical Distribution"
+)
+
+
+h1, h2, h3 = st.columns(3)
+
+
+with h1:
+
+    st.write(
+        f"Middle 50%: "
+        f"**{round(q25)} – {round(q75)}**"
+    )
+
+
+with h2:
+
+    st.write(
+        f"10–90% range: "
+        f"**{round(q10)} – {round(q90)}**"
+    )
+
+
+with h3:
+
+    st.write(
+        f"Historical median: "
+        f"**{round(median_runs)} runs**"
+    )
+
+
+# -----------------------------
+# MATCH STATE
+# -----------------------------
+
+st.subheader(
+    "🏏 Match State"
+)
+
+
+run_rate = (
+    current_runs / current_ball
+    if current_ball > 0
+    else 0
+)
+
+
+required_info = (
+    f"Current score: **{current_runs}/{current_wickets}**  \n"
+    f"Current position: **{current_ball_text}**  \n"
+    f"Current legal-ball run rate: **{run_rate:.2f}**"
+)
 
 
 st.markdown(
-    f"### {bat} vs {bowl}  |  {league}  |  {venue}"
-)
-
-a, b, c, d = st.columns(4)
-
-a.metric(
-    "Over",
-    f"{int(ov)}.{round((ov - int(ov)) * 6):.0f}"
-)
-
-b.metric(
-    "Score",
-    f"{runs}/{wickets}"
-)
-
-c.metric(
-    "CRR",
-    f"{crr:.2f}"
-)
-
-d.metric(
-    "Phase",
-    phase
+    required_info
 )
 
 
-if st.button("🚀 ANALYSE"):
+# -----------------------------
+# WIN PROBABILITY
+# -----------------------------
 
-    subset = df.copy()
+def get_win_probability():
 
-    # Historical similarity filters,
-    # progressively relaxed if data is sparse.
+    query = """
+        SELECT
+            won
+        FROM win_states
+        WHERE league = ?
+        AND innings_no = ?
+        AND ball_no BETWEEN ? AND ?
+        AND wickets BETWEEN ? AND ?
+    """
 
-    if "venue" in subset:
-        v = subset[
-            subset.venue.astype(str).str.lower()
-            == str(venue).lower()
-        ]
+    low_ball = max(
+        1,
+        current_ball - 6
+    )
 
-        if len(v) >= 30:
-            subset = v
+    high_ball = current_ball + 6
 
-    if "batting_team" in subset:
-        t = subset[
-            (subset.batting_team.astype(str) == bat)
-            &
-            (subset.bowling_team.astype(str) == bowl)
-        ]
-
-        if len(t) >= 20:
-            subset = t
-
-    if "phase" in subset:
-        p = subset[
-            subset.phase == phase
-        ]
-
-        if len(p) >= 20:
-            subset = p
-
-    if len(subset) == 0:
-        st.warning(
-            "Historical data is not available for this exact combination. "
-            "Use a broader sample."
+    df = pd.read_sql_query(
+        query,
+        conn,
+        params=(
+            league,
+            innings,
+            low_ball,
+            high_ball,
+            low_wickets,
+            high_wickets
         )
-        st.stop()
+    )
 
-    # Session target is the additional runs
-    # in the selected future window.
+    if len(df) < 20:
 
-    if "future_runs" in subset:
-        hist = subset["future_runs"].dropna()
-    else:
-        hist = pd.Series(dtype=float)
+        query = """
+            SELECT won
+            FROM win_states
+            WHERE league = ?
+            AND innings_no = ?
+            AND ball_no = ?
+        """
 
-    if len(hist):
-
-        q10, q25, q50, q75, q90 = hist.quantile(
-            [.10, .25, .50, .75, .90]
+        df = pd.read_sql_query(
+            query,
+            conn,
+            params=(
+                league,
+                innings,
+                current_ball
+            )
         )
 
-        projection = float(q50)
-        low = float(q25)
-        high = float(q75)
+    if len(df) == 0:
 
-    else:
+        return None, 0
 
-        # Transparent fallback.
-        # No fake confidence percentage.
+    probability = (
+        float(df["won"].mean())
+        * 100
+    )
 
-        phase_rate = {
-            "Powerplay": 7.8,
-            "Middle": 8.0,
-            "Death": 9.5
-        }.get(phase, 8.0)
+    return probability, len(df)
 
-        projection = phase_rate * window
-        low = projection * 0.75
-        high = projection * 1.25
 
-    # Adjust current scoring rate modestly.
+win_probability, win_samples = (
+    get_win_probability()
+)
 
-    if crr > 0:
 
-        baseline_rate = projection / window
-
-        adjusted_rate = (
-            0.65 * baseline_rate
-            +
-            0.35 * crr
-        )
-
-        projection = adjusted_rate * window
-
-    # Wicket adjustment.
-
-    if wickets >= 6:
-        projection *= 0.82
-
-    elif wickets >= 4:
-        projection *= 0.91
+if win_probability is not None:
 
     st.subheader(
-        "📊 Statistical Projection"
+        "📈 Historical Match-State Probability"
     )
 
-    x, y, z = st.columns(3)
-
-    x.metric(
-        "Projected next session",
-        f"{projection:.1f} runs"
+    st.metric(
+        "Historical batting-team win rate",
+        f"{win_probability:.1f}%"
     )
 
-    y.metric(
-        "Likely range",
-        f"{max(0, low):.0f} – {high:.0f}"
+    st.caption(
+        f"Based on {win_samples:,} historical states. "
+        "This is a historical statistic, not a guarantee."
     )
 
-    z.metric(
-        "Historical samples",
-        f"{len(subset):,}"
+else:
+
+    st.info(
+        "Is match state ke liye sufficient historical "
+        "win-state data nahi mila."
     )
 
-    if market > 0:
 
-        edge = projection - market
+# -----------------------------
+# DEBUG / DATA QUALITY
+# -----------------------------
 
-        st.info(
-            f"Market benchmark: {market:.1f} | "
-            f"Model median: {projection:.1f} | "
-            f"Difference: {edge:+.1f}"
+with st.expander(
+    "🔎 Data & Model Details"
+):
+
+    st.write(
+        "League:",
+        league
+    )
+
+    st.write(
+        "Batting team:",
+        batting_team
+    )
+
+    st.write(
+        "Bowling team:",
+        bowling_team
+    )
+
+    st.write(
+        "Venue:",
+        venue
+    )
+
+    st.write(
+        "Current legal ball:",
+        current_ball
+    )
+
+    st.write(
+        "Target legal ball:",
+        target_ball
+    )
+
+    st.write(
+        "Legal balls analysed:",
+        remaining_legal_balls
+    )
+
+    st.write(
+        "Historical observations:",
+        len(runs)
+    )
+
+    st.write(
+        "Historical median future runs:",
+        round(median_runs, 2)
+    )
+
+    st.write(
+        "Model estimate before market:",
+        round(
+            median_runs + adjustment,
+            2
         )
+    )
 
-        st.caption(
-            "The market line is shown separately; "
-            "it is not used to manufacture a confidence percentage."
-        )
-
-    if innings == "2nd innings" and target > 0:
-
-        need = target - runs
-
-        rrr = (
-            need / (20 - ov)
-            if 20 > ov
-            else math.inf
-        )
+    if market_line > 0:
 
         st.write(
-            f"Chase requirement: **{need} runs** "
-            f"from **{max(0, 20 - ov):.2f} overs** | "
-            f"RRR: **{rrr:.2f}**"
+            "Market signal used:",
+            market_line
         )
 
-
-st.sidebar.markdown("---")
-
-st.sidebar.caption(
-    "No guaranteed win rate. "
-    "Probabilities should only be shown after "
-    "out-of-sample validation."
+st.caption(
+    "Apex Quant is a statistical analytics tool. "
+    "Historical patterns do not guarantee future results."
 )
