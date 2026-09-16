@@ -1,160 +1,453 @@
-"""
-Build multi-league feature files from Cricsheet JSON zip archives.
-"""
-
 import os
-import zipfile
 import json
+import zipfile
 import urllib.request
-import pandas as pd
-
+import sqlite3
 
 URLS = {
-    "ipl": "https://cricsheet.org/downloads/ipl_json.zip",
-    "bbl": "https://cricsheet.org/downloads/bbl_json.zip",
-    "wbbl": "https://cricsheet.org/downloads/wbbl_json.zip",
+    "IPL": "https://cricsheet.org/downloads/ipl_json.zip",
+    "BBL": "https://cricsheet.org/downloads/bbl_json.zip",
+    "WBBL": "https://cricsheet.org/downloads/wbbl_json.zip",
 }
 
+DB = "cricket_history.db"
 
-def get_zip(key):
+
+def download(league):
     os.makedirs("data", exist_ok=True)
 
-    path = f"data/{key}.zip"
+    path = f"data/{league.lower()}_json.zip"
 
     if not os.path.exists(path):
-        url = os.getenv(
-            f"CRICSHEET_{key.upper()}_URL",
-            URLS[key]
+        print("Downloading", league)
+
+        urllib.request.urlretrieve(
+            os.getenv(
+                f"CRICSHEET_{league}_URL",
+                URLS[league]
+            ),
+            path
         )
 
-        print(f"Downloading {key.upper()}...")
-        urllib.request.urlretrieve(url, path)
-
-    return zipfile.ZipFile(path)
+    return path
 
 
-def window_balls(over):
-    # Five-over historical session = 30 legal-ball slots.
-    # This is the training target used by this foundation model.
-    return 30
+def build():
 
+    if os.path.exists(DB):
+        os.remove(DB)
 
-def parse(key):
+    connection = sqlite3.connect(DB)
+    cursor = connection.cursor()
 
-    z = get_zip(key)
+    cursor.execute("""
+        CREATE TABLE deliveries(
+            id INTEGER PRIMARY KEY,
+            league TEXT,
+            venue TEXT,
+            date TEXT,
+            innings_no INTEGER,
+            batting_team TEXT,
+            bowling_team TEXT,
+            ball_no INTEGER,
+            over_no INTEGER,
+            wickets INTEGER,
+            runs INTEGER
+        )
+    """)
 
-    rows = []
+    cursor.execute("""
+        CREATE TABLE samples(
+            id INTEGER PRIMARY KEY,
+            league TEXT,
+            venue TEXT,
+            date TEXT,
+            innings_no INTEGER,
+            batting_team TEXT,
+            bowling_team TEXT,
+            ball_no INTEGER,
+            target_ball INTEGER,
+            wickets INTEGER,
+            current_runs INTEGER,
+            runs_to_target INTEGER
+        )
+    """)
 
-    for name in z.namelist():
+    cursor.execute("""
+        CREATE TABLE win_states(
+            id INTEGER PRIMARY KEY,
+            league TEXT,
+            venue TEXT,
+            innings_no INTEGER,
+            batting_team TEXT,
+            bowling_team TEXT,
+            ball_no INTEGER,
+            wickets INTEGER,
+            won INTEGER
+        )
+    """)
 
-        if not name.endswith(".json"):
-            continue
-
-        try:
-            match = json.loads(z.read(name))
-        except Exception:
-            continue
-
-        info = match.get("info", {})
-
-        venue = info.get("venue", "")
-
-        teams = info.get("teams", [])
-
-        dates = info.get("dates", [""])
-
-        date = str(dates[0]) if dates else ""
-
-        for innings in match.get("innings", []):
-
-            batting_team = innings.get("team", "")
-
-            bowling_team = next(
-                (
-                    team
-                    for team in teams
-                    if team != batting_team
-                ),
-                ""
-            )
-
-            deliveries = []
-
-            for over_data in innings.get("overs", []):
-
-                over_number = over_data.get("over", 0)
-
-                for delivery in over_data.get(
-                    "deliveries", []
-                ):
-
-                    deliveries.append(
-                        (over_number, delivery)
-                    )
-
-            for i, (over_number, delivery) in enumerate(
-                deliveries
-            ):
-
-                future_deliveries = deliveries[
-                    i + 1:
-                    i + 1 + window_balls(over_number)
-                ]
-
-                future_runs = sum(
-                    d.get("runs", {}).get("total", 0)
-                    for _, d in future_deliveries
-                )
-
-                if over_number < 6:
-                    phase = "Powerplay"
-
-                elif over_number < 15:
-                    phase = "Middle"
-
-                else:
-                    phase = "Death"
-
-                rows.append(
-                    {
-                        "league": key.upper(),
-                        "date": date,
-                        "venue": venue,
-                        "batting_team": batting_team,
-                        "bowling_team": bowling_team,
-                        "over": over_number,
-                        "phase": phase,
-                        "future_runs": future_runs,
-                    }
-                )
-
-    output = f"{key}_features.csv"
-
-    pd.DataFrame(rows).to_csv(
-        output,
-        index=False
-    )
-
-    print(
-        f"{key.upper()}: {len(rows):,} rows saved to {output}"
-    )
-
-
-def main():
+    delivery_count = 0
+    sample_count = 0
+    win_count = 0
 
     for league in URLS:
-        try:
-            parse(league)
 
-        except Exception as error:
+        print("\nProcessing", league)
 
-            print(
-                f"ERROR while processing {league.upper()}: "
-                f"{error}"
-            )
+        zip_path = download(league)
 
-    print("Historical data build completed.")
+        with zipfile.ZipFile(zip_path) as archive:
+
+            for filename in archive.namelist():
+
+                if not filename.endswith(".json"):
+                    continue
+
+                try:
+                    match = json.loads(
+                        archive.read(filename)
+                    )
+                except Exception:
+                    continue
+
+                info = match.get("info", {})
+
+                venue = info.get("venue", "") or ""
+
+                teams = info.get("teams", [])
+
+                dates = info.get("dates", [])
+
+                date = str(dates[0]) if dates else ""
+
+                winner = info.get(
+                    "outcome",
+                    {}
+                ).get(
+                    "winner",
+                    ""
+                )
+
+                innings_list = match.get(
+                    "innings",
+                    []
+                )
+
+                for innings_no, innings in enumerate(
+                    innings_list,
+                    start=1
+                ):
+
+                    batting_team = innings.get(
+                        "team",
+                        ""
+                    )
+
+                    bowling_team = next(
+                        (
+                            team
+                            for team in teams
+                            if team != batting_team
+                        ),
+                        ""
+                    )
+
+                    rows = []
+
+                    legal_ball = 0
+                    total_runs = 0
+                    wickets = 0
+
+                    for over_data in innings.get(
+                        "overs",
+                        []
+                    ):
+
+                        over_no = int(
+                            over_data.get(
+                                "over",
+                                0
+                            )
+                        )
+
+                        for delivery in over_data.get(
+                            "deliveries",
+                            []
+                        ):
+
+                            runs = int(
+                                delivery
+                                .get("runs", {})
+                                .get("total", 0)
+                            )
+
+                            total_runs += runs
+
+                            wickets += len(
+                                delivery.get(
+                                    "wickets",
+                                    []
+                                )
+                            )
+
+                            extras = delivery.get(
+                                "extras",
+                                {}
+                            )
+
+                            # Wides and no-balls
+                            # do not consume a legal ball.
+                            legal = not (
+                                extras.get(
+                                    "wides",
+                                    0
+                                )
+                                or
+                                extras.get(
+                                    "noballs",
+                                    0
+                                )
+                            )
+
+                            if legal:
+
+                                legal_ball += 1
+
+                                rows.append({
+                                    "ball_no": legal_ball,
+                                    "over_no": over_no,
+                                    "wickets": wickets,
+                                    "total_runs": total_runs
+                                })
+
+                    if not rows:
+                        continue
+
+                    # Save delivery states
+                    for row in rows:
+
+                        cursor.execute(
+                            """
+                            INSERT INTO deliveries(
+                                league,
+                                venue,
+                                date,
+                                innings_no,
+                                batting_team,
+                                bowling_team,
+                                ball_no,
+                                over_no,
+                                wickets,
+                                runs
+                            )
+                            VALUES(
+                                ?,?,?,?,?,?,?,?,?,?
+                            )
+                            """,
+                            (
+                                league,
+                                venue,
+                                date,
+                                innings_no,
+                                batting_team,
+                                bowling_team,
+                                row["ball_no"],
+                                row["over_no"],
+                                row["wickets"],
+                                0
+                            )
+                        )
+
+                        delivery_count += 1
+
+                    # IMPORTANT:
+                    # Store every possible future legal-ball target.
+                    #
+                    # Therefore:
+                    #
+                    # 2.3 -> 5.2
+                    # 7.1 -> 11.4
+                    # 15.5 -> 19.2
+                    #
+                    # are all possible.
+
+                    max_ball = min(
+                        120,
+                        rows[-1]["ball_no"]
+                    )
+
+                    for row in rows:
+
+                        current_ball = row[
+                            "ball_no"
+                        ]
+
+                        current_score = row[
+                            "total_runs"
+                        ]
+
+                        current_wickets = row[
+                            "wickets"
+                        ]
+
+                        for target_ball in range(
+                            current_ball + 1,
+                            max_ball + 1
+                        ):
+
+                            target_score = rows[
+                                target_ball - 1
+                            ]["total_runs"]
+
+                            future_runs = (
+                                target_score
+                                - current_score
+                            )
+
+                            cursor.execute(
+                                """
+                                INSERT INTO samples(
+                                    league,
+                                    venue,
+                                    date,
+                                    innings_no,
+                                    batting_team,
+                                    bowling_team,
+                                    ball_no,
+                                    target_ball,
+                                    wickets,
+                                    current_runs,
+                                    runs_to_target
+                                )
+                                VALUES(
+                                    ?,?,?,?,?,?,?,?,?,?,?
+                                )
+                                """,
+                                (
+                                    league,
+                                    venue,
+                                    date,
+                                    innings_no,
+                                    batting_team,
+                                    bowling_team,
+                                    current_ball,
+                                    target_ball,
+                                    current_wickets,
+                                    current_score,
+                                    future_runs
+                                )
+                            )
+
+                            sample_count += 1
+
+                        # Historical match result
+                        if winner:
+
+                            cursor.execute(
+                                """
+                                INSERT INTO win_states(
+                                    league,
+                                    venue,
+                                    innings_no,
+                                    batting_team,
+                                    bowling_team,
+                                    ball_no,
+                                    wickets,
+                                    won
+                                )
+                                VALUES(
+                                    ?,?,?,?,?,?,?,?
+                                )
+                                """,
+                                (
+                                    league,
+                                    venue,
+                                    innings_no,
+                                    batting_team,
+                                    bowling_team,
+                                    current_ball,
+                                    current_wickets,
+                                    1
+                                    if winner == batting_team
+                                    else 0
+                                )
+                            )
+
+                            win_count += 1
+
+                    if delivery_count % 100000 == 0:
+
+                        connection.commit()
+
+                        print(
+                            "Deliveries:",
+                            delivery_count,
+                            "Samples:",
+                            sample_count
+                        )
+
+    # Indexes make the live app much faster.
+
+    cursor.execute(
+        """
+        CREATE INDEX idx_samples_target
+        ON samples(
+            league,
+            target_ball,
+            ball_no
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX idx_samples_context
+        ON samples(
+            venue,
+            batting_team,
+            bowling_team,
+            innings_no,
+            wickets
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX idx_samples_team
+        ON samples(
+            batting_team,
+            bowling_team,
+            innings_no,
+            wickets
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX idx_win
+        ON win_states(
+            league,
+            innings_no,
+            ball_no,
+            wickets
+        )
+        """
+    )
+
+    connection.commit()
+
+    connection.close()
+
+    print("\n==============================")
+    print("BUILD COMPLETE")
+    print("==============================")
+    print("Deliveries:", delivery_count)
+    print("Samples:", sample_count)
+    print("Win states:", win_count)
 
 
 if __name__ == "__main__":
-    main()
+    build()
