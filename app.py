@@ -1,30 +1,25 @@
 import sqlite3
 import math
 from pathlib import Path
-
+import numpy as np
 import pandas as pd
 import streamlit as st
 
 DB_PATH = Path("cricket_history.db")
-
-st.set_page_config(page_title="Dream Project", page_icon="🏏", layout="wide")
+st.set_page_config(page_title="VasuDev", page_icon="🏏", layout="wide")
 
 st.markdown("""
 <style>
-.main { background: #07111f; }
-.block-container { padding-top: 1.5rem; }
+.main { background:#07111f; }
+.block-container { padding-top:1.4rem; }
 .card { background:#0f1b2d; padding:18px; border-radius:14px; border:1px solid #26364d; }
 .result_yes { background:#06351f; padding:22px; border-radius:16px; border:2px solid #20c77a; text-align:center; }
 .result_no { background:#3d1010; padding:22px; border-radius:16px; border:2px solid #ef5350; text-align:center; }
-.muted { color:#94a3b8; }
+.small { color:#94a3b8; font-size:13px; }
 </style>
 """, unsafe_allow_html=True)
 
-# -------------------------
-# Database
-# -------------------------
 @st.cache_resource
-
 def get_conn():
     if not DB_PATH.exists():
         return None
@@ -33,10 +28,9 @@ def get_conn():
     return conn
 
 conn = get_conn()
-
-st.title("🏏 DREAM PROJECT")
-st.caption("Cricket Historical + AI Situation Analyzer")
-st.write("Enter the current cricket situation. The system compares it with real historical match data.")
+st.title("🏏 VasuDev")
+st.caption("Cricket Historical & Situation Analyzer")
+st.write("Compare the live cricket situation with similar historical IPL situations.")
 
 if conn is None:
     st.error("Historical database not found.")
@@ -52,367 +46,253 @@ except Exception as e:
 
 st.success(f"Historical database connected • {match_count:,} matches • {delivery_count:,} deliveries")
 
-# -------------------------
-# Helpers
-# -------------------------
 def get_values(sql, params=()):
-    rows = conn.execute(sql, params).fetchall()
-    return [r[0] for r in rows if r[0] not in (None, "")]
-
+    try:
+        rows = conn.execute(sql, params).fetchall()
+        return [r[0] for r in rows if r[0] not in (None, "")]
+    except Exception:
+        return []
 
 def balls_from_over_ball(value):
-    """Convert cricket notation 3.3 -> 21 legal-ball position."""
-    whole = int(math.floor(float(value) + 1e-9))
-    tenth = int(round((float(value) - whole) * 10))
-    # Normal cricket notation is 0..5 balls.
+    value = float(value)
+    whole = int(math.floor(value + 1e-9))
+    tenth = int(round((value - whole) * 10))
     if tenth > 5:
         whole += tenth // 6
         tenth = tenth % 6
     return whole * 6 + tenth
 
-
 def over_ball_from_balls(balls):
-    return f"{balls // 6}.{balls % 6}"
-
-
-def phase_for_ball(ball_position):
-    overs = ball_position / 6.0
-    if overs < 6:
-        return "Powerplay"
-    if overs < 15:
-        return "Middle"
-    return "Death"
-
+    return f"{int(balls)//6}.{int(balls)%6}"
 
 def safe_round(x):
-    return int(round(float(x)))
+    try:
+        return int(round(float(x)))
+    except Exception:
+        return 0
 
-
-def historical_win_analysis(batting, bowling, venue, innings_no, ball_pos, wickets):
-    """Return historical eventual-match-result states with progressive fallback."""
-    # Exact match first. Then progressively relax venue/wickets so the app never crashes
-    # or silently returns a misleading zero just because an exact combination is rare.
-    attempts = [
-        ("team + ground + innings + wickets", """SELECT won FROM win_states
-         WHERE league='IPL' AND batting_team=? AND bowling_team=? AND innings_no=?
-           AND ABS(ball_no-?) < 0.001 AND wickets=?""", (batting, bowling, innings_no, ball_pos, wickets)),
-        ("team + ground + innings", """SELECT won FROM win_states
-         WHERE league='IPL' AND batting_team=? AND bowling_team=? AND innings_no=?
-           AND ABS(ball_no-?) < 0.001""", (batting, bowling, innings_no, ball_pos)),
-        ("team + innings + wickets", """SELECT w.won FROM win_states w
-         JOIN matches m ON m.match_id=w.match_id
-         WHERE w.league='IPL' AND w.batting_team=? AND w.bowling_team=? AND w.innings_no=?
-           AND ABS(w.ball_no-?) < 0.001 AND w.wickets=?""", (batting, bowling, innings_no, ball_pos, wickets)),
-        ("team + innings", """SELECT won FROM win_states
-         WHERE league='IPL' AND batting_team=? AND bowling_team=? AND innings_no=?
-           AND ABS(ball_no-?) < 0.001""", (batting, bowling, innings_no, ball_pos)),
-    ]
-
-    # First two attempts cannot distinguish venue because win_states intentionally contains
-    # the compact state columns. Use match_id to apply venue when requested.
-    attempts = [
-        ("team + ground + innings + wickets", """SELECT w.won FROM win_states w
-         JOIN matches m ON m.match_id=w.match_id
-         WHERE w.league='IPL' AND w.batting_team=? AND w.bowling_team=? AND m.venue=?
-           AND w.innings_no=? AND ABS(w.ball_no-?) < 0.001 AND w.wickets=?""", (batting, bowling, venue, innings_no, ball_pos, wickets)),
-        ("team + ground + innings", """SELECT w.won FROM win_states w
-         JOIN matches m ON m.match_id=w.match_id
-         WHERE w.league='IPL' AND w.batting_team=? AND w.bowling_team=? AND m.venue=?
-           AND w.innings_no=? AND ABS(w.ball_no-?) < 0.001""", (batting, bowling, venue, innings_no, ball_pos)),
-        ("team + innings + wickets", """SELECT won FROM win_states
-         WHERE league='IPL' AND batting_team=? AND bowling_team=? AND innings_no=?
-           AND ABS(ball_no-?) < 0.001 AND wickets=?""", (batting, bowling, innings_no, ball_pos, wickets)),
-        ("team + innings", """SELECT won FROM win_states
-         WHERE league='IPL' AND batting_team=? AND bowling_team=? AND innings_no=?
-           AND ABS(ball_no-?) < 0.001""", (batting, bowling, innings_no, ball_pos)),
-    ]
-
-    for label, sql, params in attempts:
-        try:
-            vals = [int(r[0]) for r in conn.execute(sql, params).fetchall()]
-            if vals:
-                yes = sum(vals)
-                total = len(vals)
-                return yes, total - yes, total, label
-        except Exception:
-            continue
-    return 0, 0, 0, "no matching historical states"
-
-
-def historical_future_samples(batting, bowling, venue, innings_no, current_ball, current_wickets, target_ball):
-    """Build historical current-score -> target-score samples directly from deliveries."""
-    if target_ball <= current_ball:
-        return [], "Target/Future point must be after the current ball."
-
-    # Pull only the selected team matchup. This is small compared with the full database.
-    sql = """SELECT d.match_id, d.innings_no, d.batting_team, d.bowling_team,
-                    d.over_no, d.ball_no, d.runs, d.wickets
-             FROM deliveries d
-             JOIN matches m ON m.match_id=d.match_id
-             WHERE d.league='IPL'
-               AND d.batting_team=? AND d.bowling_team=?
-               AND d.innings_no=? AND m.venue=?
-             ORDER BY d.match_id, d.innings_no, d.id"""
-
-    params = (batting, bowling, innings_no, venue)
-    df = pd.read_sql_query(sql, conn, params=params)
-
-    # If the exact ground has no usable samples, retry matchup without ground.
-    source_label = "team + ground + innings"
+@st.cache_data(show_spinner=False)
+def load_history():
+    q = """
+    SELECT d.match_id, d.innings_no, d.batting_team, d.bowling_team,
+           d.over_no, d.ball_no, d.runs, d.wickets, d.id,
+           m.venue, m.winner
+    FROM deliveries d
+    JOIN matches m ON m.match_id=d.match_id
+    WHERE d.league='IPL'
+    ORDER BY d.match_id, d.innings_no, d.id
+    """
+    df = pd.read_sql_query(q, conn)
     if df.empty:
-        sql2 = """SELECT match_id, innings_no, batting_team, bowling_team,
-                         over_no, ball_no, runs, wickets
-                  FROM deliveries
-                  WHERE league='IPL' AND batting_team=? AND bowling_team=? AND innings_no=?
-                  ORDER BY match_id, innings_no, id"""
-        df = pd.read_sql_query(sql2, conn, params=(batting, bowling, innings_no))
-        source_label = "team + innings"
+        return df
+    df["ball_pos"] = df["ball_no"].apply(balls_from_over_ball).astype(int)
+    df["runs"] = pd.to_numeric(df["runs"], errors="coerce").fillna(0).astype(int)
+    df["wickets"] = pd.to_numeric(df["wickets"], errors="coerce").fillna(0).astype(int)
+    df["cum_runs"] = df.groupby(["match_id","innings_no"], sort=False)["runs"].cumsum()
+    df["cum_wk"] = df.groupby(["match_id","innings_no"], sort=False)["wickets"].cumsum()
+    df["batting_team"] = df["batting_team"].astype(str)
+    df["bowling_team"] = df["bowling_team"].astype(str)
+    df["venue"] = df["venue"].fillna("").astype(str)
+    df["winner"] = df["winner"].fillna("").astype(str)
+    return df
 
-    if df.empty:
-        return [], "No historical deliveries found for this team combination."
+history = load_history()
 
-    samples = []
-
-    # Match by the same current ball position. Current score is checked against the
-    # historical score with a small tolerance because exact scores are often sparse.
-    for (match_id, inn), g in df.groupby(["match_id", "innings_no"], sort=False):
-        g = g.sort_values("id" if "id" in g.columns else ["over_no", "ball_no"]).copy()
-        # Reconstruct cumulative score and wickets after each recorded delivery.
-        g["cum_runs"] = g["runs"].cumsum()
-        g["cum_wk"] = g["wickets"].cumsum()
-        # Convert stored cricket notation (e.g. 3.3) to a simple ball position.
-        g["position"] = g["ball_no"].apply(balls_from_over_ball)
-
-        current_rows = g[g["position"] == int(current_ball)]
-        if current_rows.empty:
-            continue
-
-        cur = current_rows.iloc[-1]
-        hist_score = float(cur["cum_runs"])
-        hist_wk = int(cur["cum_wk"])
-
-        # Match current wickets exactly; this keeps the comparison genuinely situation-based.
-        if hist_wk != int(current_wickets):
-            continue
-
-        # Current live score is not stored in this function's arguments, so caller will
-        # apply score filtering after receiving the raw sample tuple.
-        target_rows = g[g["position"] <= int(target_ball)]
-        if target_rows.empty:
-            continue
-        target_row = target_rows.iloc[-1]
-        target_score = float(target_row["cum_runs"])
-        future_runs = target_score - hist_score
-        samples.append((hist_score, target_score, future_runs, match_id))
-
-    return samples, source_label
-
-
-def build_future_samples(batting, bowling, venue, innings_no, current_ball, current_runs, current_wickets, target_ball):
-    raw, source_label = historical_future_samples(
-        batting, bowling, venue, innings_no, current_ball, current_wickets, target_ball
-    )
-
-    # Prefer situations close to the live score. If exact ground gives too few, progressively
-    # broaden the search so an ordinary live state still receives a useful historical sample.
-    for tolerance in (2, 4, 6, 10, 15):
-        selected = [x for x in raw if abs(x[0] - current_runs) <= tolerance]
-        if len(selected) >= 20:
-            return selected, source_label + f" • current-score tolerance ±{tolerance}"
-
-    # If ground is too restrictive, redo without ground.
-    if source_label.startswith("team + ground"):
-        sql = """SELECT match_id, innings_no, batting_team, bowling_team,
-                         over_no, ball_no, runs, wickets, id
-                  FROM deliveries
-                  WHERE league='IPL' AND batting_team=? AND bowling_team=? AND innings_no=?
-                  ORDER BY match_id, innings_no, id"""
-        df = pd.read_sql_query(sql, conn, params=(batting, bowling, innings_no))
-        raw2 = []
-        for (match_id, inn), g in df.groupby(["match_id", "innings_no"], sort=False):
-            g = g.sort_values("id").copy()
-            g["cum_runs"] = g["runs"].cumsum()
-            g["cum_wk"] = g["wickets"].cumsum()
-            g["position"] = g["ball_no"].apply(balls_from_over_ball)
-            cr = g[g["position"] == int(current_ball)]
-            if cr.empty:
-                continue
-            cur = cr.iloc[-1]
-            if int(cur["cum_wk"]) != int(current_wickets):
-                continue
-            tr = g[g["position"] <= int(target_ball)]
-            if tr.empty:
-                continue
-            tar = tr.iloc[-1]
-            raw2.append((float(cur["cum_runs"]), float(tar["cum_runs"]), float(tar["cum_runs"]-cur["cum_runs"]), match_id))
-        raw = raw2
-        source_label = "team + innings"
-
-    if not raw:
-        return [], source_label
-
-    # Best available tolerance if fewer than 20 samples.
-    selected = [x for x in raw if abs(x[0] - current_runs) <= 15]
-    return (selected if selected else raw), source_label + (" • broad historical match" if not selected else " • current-score tolerance ±15")
-
-# -------------------------
-# IPL-only dynamic lists
-# -------------------------
-league = st.selectbox("League / Tournament", ["IPL"])
-
-try:
-    teams = get_values("""SELECT DISTINCT batting_team FROM deliveries
-                           WHERE league='IPL' ORDER BY batting_team""")
-    venues = get_values("""SELECT DISTINCT venue FROM matches
-                            WHERE league='IPL' AND venue IS NOT NULL AND venue<>''
-                            ORDER BY venue""")
-except Exception:
-    teams, venues = [], []
-
-# Fallback IPL teams only if database query ever fails.
+teams = get_values("SELECT DISTINCT batting_team FROM deliveries WHERE league='IPL' ORDER BY batting_team")
+venues = get_values("SELECT DISTINCT venue FROM matches WHERE league='IPL' AND venue IS NOT NULL AND venue<>'' ORDER BY venue")
 if not teams:
-    teams = [
-        "Chennai Super Kings", "Delhi Capitals", "Gujarat Titans",
-        "Kolkata Knight Riders", "Lucknow Super Giants", "Mumbai Indians",
-        "Punjab Kings", "Rajasthan Royals", "Royal Challengers Bengaluru",
-        "Sunrisers Hyderabad"
-    ]
+    teams = ["Chennai Super Kings","Delhi Capitals","Gujarat Titans","Kolkata Knight Riders","Lucknow Super Giants","Mumbai Indians","Punjab Kings","Rajasthan Royals","Royal Challengers Bengaluru","Sunrisers Hyderabad"]
 if not venues:
-    venues = ["Rajiv Gandhi International Stadium, Hyderabad"]
+    venues = ["Rajiv Gandhi International Stadium, Uppal, Hyderabad"]
 
 st.subheader("🏏 Current Match")
-col1, col2 = st.columns(2)
-with col1:
-    batting = st.selectbox("Batting Team", teams, index=teams.index("Sunrisers Hyderabad") if "Sunrisers Hyderabad" in teams else 0)
-    bowling_options = [t for t in teams if t != batting]
-    bowling = st.selectbox("Bowling Team", bowling_options, index=bowling_options.index("Rajasthan Royals") if "Rajasthan Royals" in bowling_options else 0)
-with col2:
-    venue = st.selectbox("Ground", venues, index=venues.index("Rajiv Gandhi International Stadium, Hyderabad") if "Rajiv Gandhi International Stadium, Hyderabad" in venues else 0)
-    innings_label = st.selectbox("Innings", ["1st Innings", "2nd Innings"])
+c1,c2,c3 = st.columns(3)
+with c1:
+    default_bat = "Sunrisers Hyderabad" if "Sunrisers Hyderabad" in teams else teams[0]
+    batting = st.selectbox("Batting Team", teams, index=teams.index(default_bat))
+with c2:
+    bowling_options = [x for x in teams if x != batting]
+    default_bowl = "Rajasthan Royals" if "Rajasthan Royals" in bowling_options else bowling_options[0]
+    bowling = st.selectbox("Bowling Team", bowling_options, index=bowling_options.index(default_bowl))
+with c3:
+    default_venue = "Rajiv Gandhi International Stadium, Uppal, Hyderabad" if "Rajiv Gandhi International Stadium, Uppal, Hyderabad" in venues else venues[0]
+    venue = st.selectbox("Ground", venues, index=venues.index(default_venue))
 
-col3, col4, col5 = st.columns(3)
-with col3:
+c4,c5,c6,c7 = st.columns(4)
+with c4:
+    innings_label = st.selectbox("Innings", ["1st Innings","2nd Innings"])
+with c5:
     current_over = st.number_input("Current Over / Ball", min_value=0.0, max_value=19.5, value=3.0, step=0.1, format="%.1f")
-with col4:
+with c6:
     current_runs = st.number_input("Current Runs", min_value=0, max_value=400, value=16, step=1)
-with col5:
+with c7:
     wickets = st.number_input("Wickets", min_value=0, max_value=10, value=1, step=1)
 
 st.subheader("🎯 Target & Future Point")
-st.caption("Dono alag hain: Future Point = kis over/ball tak dekhna hai. Target Runs = us point tak kitne runs chahiye.")
-
-col6, col7, col8 = st.columns(3)
-with col6:
-    future_over = st.number_input("Future Ball / Over", min_value=0.1, max_value=20.0, value=6.0, step=0.1, format="%.1f")
-with col7:
+st.caption("Future Point = kis over/ball tak dekhna hai. Target Runs = us point tak total score kitna pahunchna hai.")
+c8,c9,c10 = st.columns(3)
+with c8:
+    future_over = st.number_input("Future Ball / Over", min_value=0.1, max_value=20.0, value=7.0, step=0.1, format="%.1f")
+with c9:
     target_runs = st.number_input("Target Runs", min_value=0, max_value=400, value=50, step=1)
-with col8:
+with c10:
     match_format = st.selectbox("Match Format", ["T20"])
 
 current_ball = balls_from_over_ball(current_over)
 target_ball = balls_from_over_ball(future_over)
 innings_no = 1 if innings_label == "1st Innings" else 2
-remaining_to_future = max(0, target_ball - current_ball)
+remaining = max(0, target_ball-current_ball)
 
-st.info(
-    f"**Live situation:** {current_runs}/{wickets} at {over_ball_from_balls(current_ball)}  •  "
-    f"**Future point:** {over_ball_from_balls(target_ball)}  •  "
-    f"**Balls remaining:** {remaining_to_future}  •  **Target:** {target_runs} runs"
-)
+st.info(f"**Live situation:** {current_runs}/{wickets} at {over_ball_from_balls(current_ball)} • **Future point:** {over_ball_from_balls(target_ball)} • **Balls remaining:** {remaining} • **Target:** {target_runs} runs")
 
-if target_ball <= current_ball:
-    st.warning("Future Ball / Over must be later than the current Over / Ball.")
+# ---------- similarity engine ----------
+def similarity_candidates(batting, bowling, venue, innings_no, current_ball, current_runs, wickets, target_ball):
+    if history.empty or target_ball <= current_ball:
+        return pd.DataFrame(), "No usable historical data"
 
-if st.button("🔎 ANALYZE HISTORICAL SITUATION", use_container_width=True, disabled=(target_ball <= current_ball)):
-    st.subheader("🧠 DREAM ANALYSIS")
-    st.markdown(
-        f"**{batting}** vs **{bowling}**  \n"
-        f"Score: **{current_runs}/{wickets}** after **{over_ball_from_balls(current_ball)} overs**  \n"
-        f"League: **IPL**  \n"
-        f"Ground: **{venue}**  \n"
-        f"Innings: **{innings_label}**  \n"
-        f"Format: **{match_format}**  \n"
-        f"Historical ball position: **{current_ball}**"
-    )
+    # Only compare situations that have enough future deliveries to reach the requested point.
+    cur = history[(history.innings_no == innings_no) & (history.ball_pos == current_ball)].copy()
+    if cur.empty:
+        # A small ball-position window prevents sparse exact-ball positions from killing the result.
+        cur = history[(history.innings_no == innings_no) & (history.ball_pos.between(max(1,current_ball-1), current_ball+1))].copy()
+    if cur.empty:
+        return pd.DataFrame(), "No historical state near this ball"
 
-    # 1) Existing-style historical YES/NO match-result state analysis.
-    yes, no, total, method = historical_win_analysis(
-        batting, bowling, venue, innings_no, current_ball, wickets
-    )
+    # Never use a state from after the target point.
+    cur = cur[cur.ball_pos < target_ball]
+    if cur.empty:
+        return pd.DataFrame(), "No historical state before target point"
 
-    st.markdown("### 📈 Historical Result")
-    if total:
-        yes_pct = yes / total * 100
-        no_pct = no / total * 100
-        a, b = st.columns(2)
-        a.metric("YES", f"{yes_pct:.1f}%")
-        b.metric("NO", f"{no_pct:.1f}%")
-        st.write(f"Calculation based on **{total} historical states**.")
-        st.write(f"Historical YES: **{yes}**  •  Historical NO: **{no}**")
-        st.caption(f"Historical state filter: {method}")
+    # Score/wicket neighborhood first; then progressively broaden.
+    tolerances = [(2,0),(4,1),(7,1),(12,2),(20,3),(999,10)]
+    selected = pd.DataFrame()
+    used = ""
+    for score_tol, wk_tol in tolerances:
+        x = cur[(cur["cum_runs"]-current_runs).abs() <= score_tol]
+        x = x[(x["cum_wk"]-wickets).abs() <= wk_tol]
+        if not x.empty:
+            selected = x.copy()
+            if score_tol == 999:
+                used = "broad IPL similarity"
+            else:
+                used = f"similar score ±{score_tol}, wickets ±{wk_tol}"
+            if len(selected) >= 40 or score_tol >= 12:
+                break
+    if selected.empty:
+        return pd.DataFrame(), "No similar historical states"
+
+    # Team/ground match strength. This is intentionally a weighting, not an all-or-nothing filter.
+    selected["team_score"] = (selected.batting_team == batting).astype(float) * 1.0 + (selected.bowling_team == bowling).astype(float) * 0.8
+    selected["ground_score"] = (selected.venue == venue).astype(float) * 1.0
+    selected["ball_score"] = np.exp(-((selected.ball_pos-current_ball).abs())/2.5)
+    selected["score_score"] = np.exp(-((selected.cum_runs-current_runs).abs())/7.0)
+    selected["wk_score"] = np.exp(-((selected.cum_wk-wickets).abs())/1.2)
+    selected["similarity"] = (0.28*selected["score_score"] + 0.18*selected["wk_score"] + 0.18*selected["ball_score"] + 0.18*selected["ground_score"] + 0.18*(selected["team_score"]/1.8))
+
+    # Stronger exact team/ground states get more influence, but broad IPL states remain available.
+    selected["weight"] = selected["similarity"].clip(lower=0.05)
+    return selected, used
+
+def add_future_scores(candidates, target_ball):
+    if candidates.empty:
+        return candidates
+    future_rows=[]
+    # Candidate rows are only a few thousand at most; find first delivery at/after target in each innings.
+    grouped = history.groupby(["match_id","innings_no"], sort=False)
+    for idx,row in candidates.iterrows():
+        key=(row.match_id,row.innings_no)
+        try:
+            g=grouped.get_group(key)
+        except KeyError:
+            continue
+        f=g[g.ball_pos <= target_ball]
+        if f.empty:
+            continue
+        # Prefer the state exactly at target; if no legal delivery exists, use the last score at/before it.
+        fr=f.iloc[-1]
+        r=row.to_dict()
+        r["future_score"]=float(fr.cum_runs)
+        r["future_runs"]=float(fr.cum_runs-row.cum_runs)
+        future_rows.append(r)
+    return pd.DataFrame(future_rows)
+
+def weighted_pct(values, weights):
+    if len(values)==0 or weights.sum()<=0:
+        return 0.0
+    return float(np.average(values, weights=weights))*100
+
+def historical_win_similarity(batting, bowling, venue, innings_no, current_ball, current_runs, wickets):
+    if history.empty:
+        return None
+    x=history[(history.innings_no==innings_no) & (history.ball_pos.between(max(1,current_ball-1),current_ball+1))].copy()
+    if x.empty:
+        return None
+    x=x[(x.cum_runs-current_runs).abs()<=20]
+    x=x[(x.cum_wk-wickets).abs()<=3]
+    if x.empty:
+        return None
+    x["weight"]=(np.exp(-((x.cum_runs-current_runs).abs())/8.0)*0.45 + np.exp(-((x.cum_wk-wickets).abs())/1.5)*0.25 + (x.venue==venue).astype(float)*0.15 + ((x.batting_team==batting)&(x.bowling_team==bowling)).astype(float)*0.15)
+    x=x[x.weight>0]
+    if x.empty:
+        return None
+    x["won_flag"]=(x.winner==x.batting_team).astype(float)
+    return x
+
+if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_ball<=current_ball)):
+    st.subheader("🧠 VasuDev Analysis")
+    st.markdown(f"**{batting}** vs **{bowling}**  •  **{venue}**  •  **{innings_label}**  •  **{match_format}**")
+    st.write(f"Current: **{current_runs}/{wickets} at {over_ball_from_balls(current_ball)}** → Future: **{over_ball_from_balls(target_ball)}** → Target: **{target_runs}**")
+
+    # Existing eventual-match-result style, now similarity based.
+    win_df=historical_win_similarity(batting,bowling,venue,innings_no,current_ball,current_runs,wickets)
+    st.markdown("### 📈 Historical Match Result")
+    if win_df is not None and len(win_df):
+        win_pct=weighted_pct(win_df.won_flag.to_numpy(),win_df.weight.to_numpy())
+        no_pct=100-win_pct
+        a,b,c=st.columns(3)
+        a.metric("YES",f"{win_pct:.1f}%")
+        b.metric("NO",f"{no_pct:.1f}%")
+        c.metric("Similar States",len(win_df))
+        st.caption("YES here means the batting team eventually won in similar historical match states. This is historical frequency, not a guarantee.")
     else:
-        st.info("No matching historical result states were found for this exact situation. Try another ground, over/ball, or team combination.")
+        st.info("No usable historical match-result sample was found.")
 
-    # 2) Target-at-future-point analysis.
+    # Target analysis.
     st.markdown("### 🎯 Historical Target Analysis")
-    samples, source = build_future_samples(
-        batting, bowling, venue, innings_no,
-        current_ball, current_runs, wickets, target_ball
-    )
-
-    if samples:
-        target_yes = sum(1 for x in samples if x[1] >= target_runs)
-        target_no = len(samples) - target_yes
-        target_pct = target_yes / len(samples) * 100
-        no_pct2 = target_no / len(samples) * 100
-
-        st.write(
-            f"**Question:** Historical situations similar to **{current_runs}/{wickets} at {over_ball_from_balls(current_ball)}** — "
-            f"did the batting team reach **{target_runs} runs by {over_ball_from_balls(target_ball)}**?"
-        )
-
-        if target_yes >= target_no:
-            box_class = "result_yes"
-            label = "YES"
-            pct = target_pct
+    cand, method=similarity_candidates(batting,bowling,venue,innings_no,current_ball,current_runs,wickets,target_ball)
+    if not cand.empty:
+        cand=add_future_scores(cand,target_ball)
+        if cand.empty:
+            st.info("Historical states were found, but not enough of them continued to the selected future point.")
         else:
-            box_class = "result_no"
-            label = "NO"
-            pct = no_pct2
-
-        st.markdown(f"""
-        <div class="{box_class}">
-            <h1>{label}</h1>
-            <h2>{pct:.1f}% historical frequency</h2>
-            <p>Target: <b>{target_runs} runs</b> by <b>{over_ball_from_balls(target_ball)}</b></p>
-            <p>{remaining_to_future} balls between current point and future point</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Historical YES", target_yes)
-        c2.metric("Historical NO", target_no)
-        c3.metric("Samples", len(samples))
-        c4.metric("Avg Future Runs", safe_round(pd.Series([x[2] for x in samples]).mean()))
-
-        future_runs = pd.Series([x[2] for x in samples])
-        target_scores = pd.Series([x[1] for x in samples])
-        st.write(
-            f"Historical future runs: **{safe_round(future_runs.mean())} average**  •  "
-            f"**{safe_round(future_runs.median())} median**  •  "
-            f"10–90% range: **{safe_round(future_runs.quantile(.10))} – {safe_round(future_runs.quantile(.90))} runs**"
-        )
-        st.write(
-            f"Historical score at future point: **{safe_round(target_scores.mean())} average**  •  "
-            f"10–90% range: **{safe_round(target_scores.quantile(.10))} – {safe_round(target_scores.quantile(.90))}**"
-        )
-        st.caption(f"Future-target calculation source: {source}. Historical frequency, not a guarantee.")
+            cand["hit"]=(cand.future_score>=target_runs).astype(float)
+            yes_pct=weighted_pct(cand.hit.to_numpy(),cand.weight.to_numpy())
+            no_pct=100-yes_pct
+            avg_future=np.average(cand.future_runs,weights=cand.weight)
+            avg_score=np.average(cand.future_score,weights=cand.weight)
+            q10=float(cand.future_score.quantile(.10)); q90=float(cand.future_score.quantile(.90))
+            box="result_yes" if yes_pct>=no_pct else "result_no"
+            label="YES" if yes_pct>=no_pct else "NO"
+            pct=max(yes_pct,no_pct)
+            st.write(f"**Question:** Similar historical situations — did the batting team reach **{target_runs} runs by {over_ball_from_balls(target_ball)}**?")
+            st.markdown(f'<div class="{box}"><h1>{label}</h1><h2>{pct:.1f}% historical frequency</h2><p>Target: <b>{target_runs}</b> by <b>{over_ball_from_balls(target_ball)}</b> • {remaining} balls remaining</p></div>',unsafe_allow_html=True)
+            m1,m2,m3,m4=st.columns(4)
+            m1.metric("Historical YES",int(round(cand.hit.sum())))
+            m2.metric("Historical NO",int(len(cand)-round(cand.hit.sum())))
+            m3.metric("Similar Samples",len(cand))
+            m4.metric("Avg Future Runs",safe_round(avg_future))
+            st.write(f"**YES:** {yes_pct:.1f}%  •  **NO:** {no_pct:.1f}%")
+            st.write(f"Expected score at {over_ball_from_balls(target_ball)}: **{safe_round(avg_score)} runs**  •  Historical 10–90% range: **{safe_round(q10)}–{safe_round(q90)}**")
+            st.caption(f"Similarity engine: {method}. Ground, team, score, wickets and ball position are weighted; broader IPL data is used when exact situations are sparse.")
+            if len(cand)<30:
+                st.warning("Small historical sample: treat this result as low-data historical evidence.")
+            elif len(cand)<100:
+                st.info("Moderate historical sample: the result is based on similar situations, not exact duplicates.")
+            else:
+                st.success("Good historical sample size for this situation.")
     else:
-        st.info("इस target के लिए पर्याप्त historical future-run data नहीं मिला।")
+        st.info("No exact match was required, but the database could not find a usable historical continuation for this future point. Try a later future point or another IPL situation.")
 
-    # 3) Clear interpretation so YES is never ambiguous.
-    st.markdown("### 🧾 What YES means")
-    st.write(
-        f"YES/NO above is **not** asking whether the current 16/{wickets} situation itself is YES. "
-        f"It specifically asks whether similar historical situations reached **{target_runs} runs by {over_ball_from_balls(target_ball)}**."
-    )
+    st.markdown("### 🧩 How VasuDev handles rare situations")
+    st.write("The system does not depend on one exact historical match. It first uses close score/wicket/ball situations and gives extra weight to the selected ground and teams. If the exact combination is rare, it automatically broadens to similar IPL situations instead of simply showing Data Not Found.")
+    st.caption("Player-level adjustment is reserved for the next data layer because the current cricket_history.db does not contain the current playing XI/player-at-ball fields. The present engine therefore does not invent player information.")
