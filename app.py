@@ -80,8 +80,21 @@ def get_values(sql, params=()):
         return []
 
 def balls_from_over_ball(value):
-    # Cricket over.ball is NOT decimal math: each over has exactly 6 legal balls.
-    # We accept whole-over states (e.g. 3.0) and legal balls 1-6 only.
+    # Historical database converter. Keep this permissive because the source
+    # data can contain delivery-number notation for illegal deliveries.
+    # The user-facing controls below are separately restricted to legal
+    # cricket positions (1-6 within an over).
+    value = float(value)
+    whole = int(math.floor(value + 1e-9))
+    tenth = int(round((value - whole) * 10))
+    if tenth > 5:
+        whole += tenth // 6
+        tenth = tenth % 6
+    return whole * 6 + tenth
+
+def strict_balls_from_over_ball(value):
+    # User-facing converter: cricket over.ball is not decimal math.
+    # Valid examples: 4.1 ... 4.6, then 5.1.
     text = str(value).strip()
     try:
         whole_s, ball_s = text.split(".", 1)
@@ -189,8 +202,8 @@ with c9:
 with c10:
     match_format = st.selectbox("Match Format", ["T20"])
 
-current_ball = balls_from_over_ball(current_over)
-target_ball = balls_from_over_ball(future_over)
+current_ball = strict_balls_from_over_ball(current_over)
+target_ball = strict_balls_from_over_ball(future_over)
 innings_no = 1 if innings_label == "1st Innings" else 2
 remaining = max(0, target_ball-current_ball)
 
