@@ -1,4 +1,7 @@
+import os
+import sqlite3
 import streamlit as st
+import pandas as pd
 
 
 # =========================================================
@@ -11,6 +14,224 @@ st.set_page_config(
     layout="wide"
 )
 
+DB = "cricket_history.db"
+
+
+# =========================================================
+# DATABASE CONNECTION
+# =========================================================
+
+def get_connection():
+    if not os.path.exists(DB):
+        return None
+
+    return sqlite3.connect(DB)
+
+
+# =========================================================
+# HISTORICAL WIN CALCULATION
+# =========================================================
+
+def calculate_win_percentage(
+    league,
+    batting_team,
+    bowling_team,
+    innings_no,
+    ball_no,
+    wickets
+):
+
+    connection = get_connection()
+
+    if connection is None:
+        return None
+
+    # -----------------------------------------------------
+    # First try: same league + same innings + same ball
+    # + similar wicket situation
+    # -----------------------------------------------------
+
+    query = """
+        SELECT won
+        FROM win_states
+        WHERE league = ?
+          AND innings_no = ?
+          AND ball_no BETWEEN ? AND ?
+          AND wickets BETWEEN ? AND ?
+    """
+
+    lower_ball = max(1, ball_no - 1)
+    upper_ball = ball_no + 1
+
+    lower_wickets = max(0, wickets - 1)
+    upper_wickets = min(10, wickets + 1)
+
+    try:
+
+        data = pd.read_sql_query(
+            query,
+            connection,
+            params=(
+                league,
+                innings_no,
+                lower_ball,
+                upper_ball,
+                lower_wickets,
+                upper_wickets
+            )
+        )
+
+        # -------------------------------------------------
+        # If too few results, widen the search.
+        # -------------------------------------------------
+
+        if len(data) < 20:
+
+            query = """
+                SELECT won
+                FROM win_states
+                WHERE league = ?
+                  AND innings_no = ?
+                  AND ball_no BETWEEN ? AND ?
+            """
+
+            lower_ball = max(1, ball_no - 3)
+            upper_ball = ball_no + 3
+
+            data = pd.read_sql_query(
+                query,
+                connection,
+                params=(
+                    league,
+                    innings_no,
+                    lower_ball,
+                    upper_ball
+                )
+            )
+
+        # -------------------------------------------------
+        # If still too little data, use all leagues
+        # with same innings / ball / wickets.
+        # -------------------------------------------------
+
+        if len(data) < 20:
+
+            query = """
+                SELECT won
+                FROM win_states
+                WHERE innings_no = ?
+                  AND ball_no BETWEEN ? AND ?
+                  AND wickets BETWEEN ? AND ?
+            """
+
+            data = pd.read_sql_query(
+                query,
+                connection,
+                params=(
+                    innings_no,
+                    max(1, ball_no - 3),
+                    ball_no + 3,
+                    lower_wickets,
+                    upper_wickets
+                )
+            )
+
+        connection.close()
+
+        if data.empty:
+            return None
+
+        total = len(data)
+
+        yes_count = int(
+            data["won"].sum()
+        )
+
+        no_count = total - yes_count
+
+        yes_percentage = (
+            yes_count / total
+        ) * 100
+
+        no_percentage = (
+            no_count / total
+        ) * 100
+
+        return {
+            "yes": yes_percentage,
+            "no": no_percentage,
+            "total": total,
+            "yes_count": yes_count,
+            "no_count": no_count
+        }
+
+    except Exception:
+
+        connection.close()
+
+        return None
+
+
+# =========================================================
+# HISTORICAL FUTURE-RUN CALCULATION
+# =========================================================
+
+def calculate_future_runs(
+    league,
+    innings_no,
+    ball_no,
+    target_ball
+):
+
+    connection = get_connection()
+
+    if connection is None:
+        return None
+
+    query = """
+        SELECT future_runs
+        FROM samples
+        WHERE league = ?
+          AND innings_no = ?
+          AND ball_no BETWEEN ? AND ?
+          AND target_ball = ?
+    """
+
+    try:
+
+        data = pd.read_sql_query(
+            query,
+            connection,
+            params=(
+                league,
+                innings_no,
+                max(1, ball_no - 2),
+                ball_no + 2,
+                target_ball
+            )
+        )
+
+        connection.close()
+
+        if data.empty:
+            return None
+
+        return {
+            "average": float(
+                data["future_runs"].mean()
+            ),
+            "median": float(
+                data["future_runs"].median()
+            ),
+            "samples": len(data)
+        }
+
+    except Exception:
+
+        connection.close()
+
+        return None
+
 
 # =========================================================
 # HEADER
@@ -18,13 +239,68 @@ st.set_page_config(
 
 st.title("🏏 DREAM PROJECT")
 
-st.subheader("Cricket Historical + AI Situation Analyzer")
+st.subheader(
+    "Cricket Historical + AI Situation Analyzer"
+)
 
 st.write(
-    "Live cricket की current situation डालें। "
-    "Dream Project historical data और AI analysis के आधार पर "
-    "result calculate करेगा."
+    "Enter the current cricket situation. "
+    "The system compares it with real historical match data."
 )
+
+
+# =========================================================
+# DATABASE STATUS
+# =========================================================
+
+if os.path.exists(DB):
+
+    connection = get_connection()
+
+    try:
+
+        cursor = connection.cursor()
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM matches"
+        )
+
+        match_count = cursor.fetchone()[0]
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM deliveries"
+        )
+
+        delivery_count = cursor.fetchone()[0]
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM win_states"
+        )
+
+        win_count = cursor.fetchone()[0]
+
+        connection.close()
+
+        st.success(
+            f"Historical database connected • "
+            f"{match_count:,} matches • "
+            f"{delivery_count:,} deliveries"
+        )
+
+    except Exception:
+
+        if connection:
+            connection.close()
+
+        st.warning(
+            "Database found, but statistics could not be read."
+        )
+
+else:
+
+    st.error(
+        "Historical database not found."
+    )
 
 
 # =========================================================
@@ -35,9 +311,7 @@ st.divider()
 
 st.header("🏏 Current Match")
 
-
 col1, col2 = st.columns(2)
-
 
 with col1:
 
@@ -108,16 +382,14 @@ with col2:
 
 
 # =========================================================
-# EXTRA CURRENT INFORMATION
+# EXTRA INFORMATION
 # =========================================================
 
 st.divider()
 
 st.header("📊 Additional Current Information")
 
-
 col3, col4 = st.columns(2)
-
 
 with col3:
 
@@ -159,7 +431,7 @@ with col4:
 
 
 # =========================================================
-# ANALYZE BUTTON
+# ANALYZE
 # =========================================================
 
 st.divider()
@@ -171,16 +443,39 @@ analyze = st.button(
 
 
 # =========================================================
-# ANALYSIS
+# RESULT
 # =========================================================
 
 if analyze:
 
+    innings_no = (
+        1
+        if innings == "1st Innings"
+        else 2
+    )
+
+    # Convert 2.3 style cricket over
+    # into approximate legal-ball number.
+    over_number = int(overs)
+
+    decimal_part = round(
+        overs - over_number,
+        1
+    )
+
+    ball_in_over = int(
+        round(decimal_part * 10)
+    )
+
+    if ball_in_over > 6:
+        ball_in_over = 6
+
+    current_ball = (
+        over_number * 6
+        + ball_in_over
+    )
+
     st.header("🧠 DREAM ANALYSIS")
-
-    # Current situation display
-
-    st.subheader("Current Situation")
 
     st.write(
         f"**{batting_team or 'Batting Team'}** "
@@ -193,11 +488,11 @@ if analyze:
     )
 
     st.write(
-        f"Ground: **{ground or 'Not entered'}**"
+        f"Bowling Team: **{bowling_team or 'Not entered'}**"
     )
 
     st.write(
-        f"Bowling Team: **{bowling_team or 'Not entered'}**"
+        f"Ground: **{ground or 'Not entered'}**"
     )
 
     st.write(
@@ -208,63 +503,117 @@ if analyze:
         f"Format: **{match_format}**"
     )
 
-    if target > 0:
-
-        st.write(
-            f"Target / Session: **{target}**"
-        )
+    st.write(
+        f"Historical ball position: **{current_ball}**"
+    )
 
     st.divider()
 
+    st.subheader(
+        "📈 Historical Result"
+    )
 
-    # =====================================================
-    # YES / NO RESULT
-    # =====================================================
+    result = calculate_win_percentage(
+        league=league,
+        batting_team=batting_team,
+        bowling_team=bowling_team,
+        innings_no=innings_no,
+        ball_no=current_ball,
+        wickets=wickets
+    )
 
-    st.subheader("📈 Historical + AI Result")
+    if result is None:
 
+        st.warning(
+            "इस situation के लिए पर्याप्त historical data नहीं मिला। "
+            "इसलिए percentage नहीं बनाई गई।"
+        )
 
-    result_col1, result_col2 = st.columns(2)
+    else:
 
+        result_col1, result_col2 = st.columns(2)
 
-    with result_col1:
+        with result_col1:
 
-        st.metric(
-            label="YES",
-            value="—"
+            st.metric(
+                "YES",
+                f"{result['yes']:.1f}%"
+            )
+
+        with result_col2:
+
+            st.metric(
+                "NO",
+                f"{result['no']:.1f}%"
+            )
+
+        st.info(
+            f"Calculation based on "
+            f"{result['total']:,} historical states."
+        )
+
+        st.write(
+            f"Historical YES: **{result['yes_count']:,}**"
+        )
+
+        st.write(
+            f"Historical NO: **{result['no_count']:,}**"
         )
 
 
-    with result_col2:
+    # =====================================================
+    # FUTURE RUN ANALYSIS
+    # =====================================================
 
-        st.metric(
-            label="NO",
-            value="—"
+    if target > 0 and current_ball > 0:
+
+        st.divider()
+
+        st.subheader(
+            "🎯 Historical Future-Run Analysis"
         )
 
+        target_ball = int(target)
 
-    st.info(
-        "Historical database और AI calculation engine "
-        "अभी connect किया जा रहा है। "
-        "इस stage पर कोई अनुमानित percentage नहीं दिखाई जाएगी।"
-    )
+        if target_ball > current_ball:
 
+            future_result = calculate_future_runs(
+                league=league,
+                innings_no=innings_no,
+                ball_no=current_ball,
+                target_ball=target_ball
+            )
 
-    # =====================================================
-    # HISTORICAL DATA STATUS
-    # =====================================================
+            if future_result:
 
-    st.subheader("📚 Historical Data")
+                st.write(
+                    f"Historical sample size: "
+                    f"**{future_result['samples']:,}**"
+                )
 
-    st.write(
-        "Dream Project current situation को historical "
-        "matches से compare करेगा."
-    )
+                st.write(
+                    f"Average future runs: "
+                    f"**{future_result['average']:.2f}**"
+                )
 
-    st.write(
-        "Similar historical situations मिलने के बाद "
-        "उनके वास्तविक outcomes से percentage calculate होगी."
-    )
+                st.write(
+                    f"Median future runs: "
+                    f"**{future_result['median']:.2f}**"
+                )
+
+            else:
+
+                st.info(
+                    "इस target के लिए पर्याप्त historical "
+                    "future-run data नहीं मिला।"
+                )
+
+        else:
+
+            st.info(
+                "Target / Session number current ball से "
+                "आगे होना चाहिए।"
+            )
 
 
     # =====================================================
@@ -273,16 +622,18 @@ if analyze:
 
     st.divider()
 
-    st.subheader("🔎 Transparency")
-
-    st.write(
-        "Result वही percentage होगी जो available historical "
-        "data और model calculation से निकलती है."
+    st.subheader(
+        "🔎 Transparency"
     )
 
     st.write(
-        "System percentage को artificially बढ़ाकर या घटाकर "
-        "नहीं दिखाएगा."
+        "Percentage historical match outcomes से calculate "
+        "की जाती है। कोई artificial percentage नहीं बनाई जाती।"
+    )
+
+    st.write(
+        "Historical sample कम होने पर system percentage "
+        "दिखाने के बजाय insufficient data बताएगा।"
     )
 
 
