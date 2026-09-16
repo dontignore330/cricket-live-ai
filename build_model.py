@@ -7,7 +7,7 @@ import sqlite3
 URLS = {
     "IPL": "https://cricsheet.org/downloads/ipl_json.zip",
     "BBL": "https://cricsheet.org/downloads/bbl_json.zip",
-    "WBBL": "https://cricsheet.org/downloads/wbbl_json.zip",
+    "WBBL": "https://cricsheet.org/downloads/wbb_json.zip",
 }
 
 DB = "cricket_history.db"
@@ -21,13 +21,27 @@ def download(league):
     if not os.path.exists(path):
         print("Downloading", league)
 
-        urllib.request.urlretrieve(
-            os.getenv(
-                f"CRICSHEET_{league}_URL",
-                URLS[league]
-            ),
-            path
+        url = os.getenv(
+            f"CRICSHEET_{league}_URL",
+            URLS[league]
         )
+
+        print("Download URL:", url)
+
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            }
+        )
+
+        with urllib.request.urlopen(
+            request,
+            timeout=120
+        ) as response:
+
+            with open(path, "wb") as file:
+                file.write(response.read())
 
     return path
 
@@ -113,13 +127,26 @@ def build():
 
                 info = match.get("info", {})
 
-                venue = info.get("venue", "") or ""
+                venue = info.get(
+                    "venue",
+                    ""
+                ) or ""
 
-                teams = info.get("teams", [])
+                teams = info.get(
+                    "teams",
+                    []
+                )
 
-                dates = info.get("dates", [])
+                dates = info.get(
+                    "dates",
+                    []
+                )
 
-                date = str(dates[0]) if dates else ""
+                date = (
+                    str(dates[0])
+                    if dates
+                    else ""
+                )
 
                 winner = info.get(
                     "outcome",
@@ -261,16 +288,13 @@ def build():
 
                         delivery_count += 1
 
-                    # IMPORTANT:
                     # Store every possible future legal-ball target.
                     #
-                    # Therefore:
+                    # Example:
                     #
                     # 2.3 -> 5.2
                     # 7.1 -> 11.4
                     # 15.5 -> 19.2
-                    #
-                    # are all possible.
 
                     max_ball = min(
                         120,
