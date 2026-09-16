@@ -1,5 +1,7 @@
 import sqlite3
 import math
+import os
+import hmac
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -7,6 +9,28 @@ import streamlit as st
 
 DB_PATH = Path("cricket_history.db")
 st.set_page_config(page_title="VasuDev", page_icon="🏏", layout="wide")
+
+# ---------- private app lock ----------
+# Set VASUDEV_PASSWORD as a secret/environment variable on the hosting service.
+APP_PASSWORD = os.environ.get("VASUDEV_PASSWORD", "").strip()
+if not APP_PASSWORD:
+    st.error("🔒 VasuDev is locked. Hosting setup is incomplete: set the VASUDEV_PASSWORD secret.")
+    st.stop()
+
+if "vasudev_authenticated" not in st.session_state:
+    st.session_state.vasudev_authenticated = False
+
+if not st.session_state.vasudev_authenticated:
+    st.title("🔒 VasuDev Private Access")
+    st.caption("Enter the private password to open the cricket analysis app.")
+    password = st.text_input("Password", type="password")
+    if st.button("🔓 Unlock", use_container_width=True):
+        if hmac.compare_digest(password, APP_PASSWORD):
+            st.session_state.vasudev_authenticated = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    st.stop()
 
 st.markdown("""
 <style>
@@ -23,7 +47,9 @@ st.markdown("""
 def get_conn():
     if not DB_PATH.exists():
         return None
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    # Open the historical database in SQLite read-only mode. The deployed app
+    # therefore cannot insert, update, or delete historical data through this connection.
+    conn = sqlite3.connect(f"file:{DB_PATH.resolve()}?mode=ro", uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -54,16 +80,41 @@ def get_values(sql, params=()):
         return []
 
 def balls_from_over_ball(value):
-    value = float(value)
-    whole = int(math.floor(value + 1e-9))
-    tenth = int(round((value - whole) * 10))
-    if tenth > 5:
-        whole += tenth // 6
-        tenth = tenth % 6
-    return whole * 6 + tenth
+    # Cricket over.ball is NOT decimal math: each over has exactly 6 legal balls.
+    # We accept whole-over states (e.g. 3.0) and legal balls 1-6 only.
+    text = str(value).strip()
+    try:
+        whole_s, ball_s = text.split(".", 1)
+        whole = int(whole_s)
+        ball = int(ball_s)
+    except (ValueError, TypeError):
+        raise ValueError("Invalid cricket over.ball")
+    if whole < 0 or whole > 20 or ball < 0 or ball > 6:
+        raise ValueError("Invalid cricket over.ball")
+    if whole == 20 and ball != 0:
+        raise ValueError("20.0 is the end of a T20 innings")
+    return whole * 6 + ball
 
 def over_ball_from_balls(balls):
-    return f"{int(balls)//6}.{int(balls)%6}"
+    # Internal ball count is one-based within each over: 4.6 is ball 30,
+    # and the next legal delivery is 5.1 (ball 31).
+    balls = int(balls)
+    if balls <= 0:
+        return "0.0"
+    over = (balls - 1) // 6
+    ball = ((balls - 1) % 6) + 1
+    return f"{over}.{ball}"
+
+def valid_over_ball_options(max_over=20):
+    # Offer only legal delivery positions. 0.0 means before the first ball.
+    # After 4.6 the next option is 5.1 — never 4.7, 4.8, etc.
+    options = ["0.0"]
+    for over in range(max_over):
+        options.extend(f"{over}.{ball}" for ball in range(1, 7))
+    return options
+
+VALID_CURRENT_POINTS = valid_over_ball_options(20)
+VALID_FUTURE_POINTS = valid_over_ball_options(20)
 
 def safe_round(x):
     try:
@@ -122,7 +173,7 @@ c4,c5,c6,c7 = st.columns(4)
 with c4:
     innings_label = st.selectbox("Innings", ["1st Innings","2nd Innings"])
 with c5:
-    current_over = st.number_input("Current Over / Ball", min_value=0.0, max_value=19.5, value=3.0, step=0.1, format="%.1f")
+    current_over = st.selectbox("Current Over / Ball", VALID_CURRENT_POINTS, index=VALID_CURRENT_POINTS.index("3.1"))
 with c6:
     current_runs = st.number_input("Current Runs", min_value=0, max_value=400, value=16, step=1)
 with c7:
@@ -132,7 +183,7 @@ st.subheader("🎯 Target & Future Point")
 st.caption("Future Point = kis over/ball tak dekhna hai. Target Runs = us point tak total score kitna pahunchna hai.")
 c8,c9,c10 = st.columns(3)
 with c8:
-    future_over = st.number_input("Future Ball / Over", min_value=0.1, max_value=20.0, value=7.0, step=0.1, format="%.1f")
+    future_over = st.selectbox("Future Ball / Over", VALID_FUTURE_POINTS, index=VALID_FUTURE_POINTS.index("7.1"))
 with c9:
     target_runs = st.number_input("Target Runs", min_value=0, max_value=400, value=50, step=1)
 with c10:
@@ -245,15 +296,29 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
 
     # Existing eventual-match-result style, now similarity based.
     win_df=historical_win_similarity(batting,bowling,venue,innings_no,current_ball,current_runs,wickets)
-    st.markdown("### 📈 Historical Match Result")
+    st.markdown("### 🏆 Historical Team Winning / Loss Result")
     if win_df is not None and len(win_df):
-        win_pct=weighted_pct(win_df.won_flag.to_numpy(),win_df.weight.to_numpy())
-        no_pct=100-win_pct
-        a,b,c=st.columns(3)
-        a.metric("YES",f"{win_pct:.1f}%")
-        b.metric("NO",f"{no_pct:.1f}%")
-        c.metric("Similar States",len(win_df))
-        st.caption("YES here means the batting team eventually won in similar historical match states. This is historical frequency, not a guarantee.")
+        valid_result = win_df[win_df.winner.str.strip() != ""].copy()
+        if len(valid_result):
+            won = (valid_result.winner == valid_result.batting_team)
+            lost = (valid_result.winner == valid_result.bowling_team)
+            other = ~(won | lost)
+            win_weight = valid_result.loc[won, "weight"].sum()
+            loss_weight = valid_result.loc[lost, "weight"].sum()
+            other_weight = valid_result.loc[other, "weight"].sum()
+            total_weight = win_weight + loss_weight + other_weight
+            win_pct = 100 * win_weight / total_weight if total_weight else 0.0
+            loss_pct = 100 * loss_weight / total_weight if total_weight else 0.0
+            other_pct = 100 * other_weight / total_weight if total_weight else 0.0
+            a,b,c,d=st.columns(4)
+            a.metric("Batting Team WIN",f"{win_pct:.1f}%")
+            b.metric("Batting Team LOSS",f"{loss_pct:.1f}%")
+            c.metric("Other / Tie",f"{other_pct:.1f}%")
+            d.metric("Similar States",len(valid_result))
+            st.write(f"**{batting}:** {win_pct:.1f}% historical win frequency  •  **Loss:** {loss_pct:.1f}%  •  **Other:** {other_pct:.1f}%")
+            st.caption("This is based on historical match states similar to the current score, wickets, ball position, teams and ground. It is historical frequency, not a guarantee.")
+        else:
+            st.info("Similar states were found, but they do not contain a usable final match result.")
     else:
         st.info("No usable historical match-result sample was found.")
 
