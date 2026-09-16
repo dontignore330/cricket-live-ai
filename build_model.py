@@ -6,38 +6,48 @@ import time
 DB_FILE = "cricket_history.db"
 API_URL = "https://db-mcp.tigzig.com/v1/query/duckdb"
 
-def run_sql(sql):
-    response = requests.post(
-        API_URL,
-        json={"sql": sql, "format": "json"},
-        timeout=120
-    )
 
-    print("API status:", response.status_code)
+def query(sql):
+    for attempt in range(5):
+        try:
+            r = requests.post(
+                API_URL,
+                json={"sql": sql, "format": "json"},
+                timeout=120
+            )
 
-    if response.status_code != 200:
-        print(response.text[:1000])
-        return []
+            print("API:", r.status_code)
 
-    data = response.json()
+            if r.status_code == 200:
+                data = r.json()
 
-    if isinstance(data, dict):
-        if "rows" in data:
-            return data["rows"]
-        if "data" in data:
-            return data["data"]
+                if isinstance(data, dict):
+                    return data.get("rows", data.get("data", []))
 
-    if isinstance(data, list):
-        return data
+                if isinstance(data, list):
+                    return data
+
+                return []
+
+            print(r.text[:500])
+
+        except Exception as e:
+            print("ERROR:", e)
+
+        time.sleep(5)
 
     return []
 
 
-def value(row, key, default=""):
+def val(row, key, default=""):
     if isinstance(row, dict):
         return row.get(key, default)
     return default
 
+
+# ============================================================
+# NEW DATABASE
+# ============================================================
 
 if os.path.exists(DB_FILE):
     os.remove(DB_FILE)
@@ -47,6 +57,12 @@ cur = db.cursor()
 
 cur.execute("PRAGMA journal_mode=OFF")
 cur.execute("PRAGMA synchronous=OFF")
+cur.execute("PRAGMA temp_store=FILE")
+
+
+# ============================================================
+# TABLES
+# ============================================================
 
 cur.execute("""
 CREATE TABLE matches (
@@ -104,69 +120,111 @@ CREATE TABLE samples (
 
 db.commit()
 
-print("======================================")
-print(" DREAM PROJECT IPL DATABASE BUILDER")
-print("======================================")
+
+print("==========================================")
+print(" DREAM PROJECT - IPL DATABASE")
+print("==========================================")
+
+
+# ============================================================
+# STEP 1
+# GET IPL MATCH IDS DIRECTLY FROM IPL VIEW
+# ============================================================
+
 print("")
+print("STEP 1: Finding IPL matches...")
+
+match_ids = []
+offset = 0
+batch = 1000
+
+while True:
+
+    sql = f"""
+    SELECT DISTINCT match_id
+    FROM ball_by_ball_ipl
+    ORDER BY match_id
+    LIMIT {batch}
+    OFFSET {offset}
+    """
+
+    rows = query(sql)
+
+    if not rows:
+        break
+
+    for row in rows:
+        match_id = str(val(row, "match_id", ""))
+
+        if match_id:
+            match_ids.append(match_id)
+
+    print(
+        "Match IDs:",
+        len(match_ids)
+    )
+
+    offset += len(rows)
+
+    if len(rows) < batch:
+        break
 
 
-# -------------------------------------------------
-# 1. GET IPL MATCH LIST
-# -------------------------------------------------
+print("")
+print("TOTAL IPL MATCHES FOUND:", len(match_ids))
 
-print("STEP 1: Getting IPL matches...")
 
-match_sql = """
-SELECT
-    match_id,
-    start_date,
-    venue,
-    team1,
-    team2,
-    winner
-FROM match_info
-WHERE match_type = 'IPL'
-ORDER BY start_date, match_id
-"""
-
-match_rows = run_sql(match_sql)
-
-print("Match rows received:", len(match_rows))
-
-match_map = {}
-
-for row in match_rows:
-
-    match_id = str(value(row, "match_id", ""))
-
-    if not match_id:
-        continue
-
-    match_map[match_id] = {
-        "date": str(value(row, "start_date", "")),
-        "venue": str(value(row, "venue", "")),
-        "team1": str(value(row, "team1", "")),
-        "team2": str(value(row, "team2", "")),
-        "winner": str(value(row, "winner", ""))
-    }
-
-print("Matches found:", len(match_map))
-
-if len(match_map) == 0:
-    print("ERROR: No IPL matches returned.")
+if not match_ids:
+    print("")
+    print("ERROR: IPL view returned zero matches.")
     db.close()
     raise SystemExit(1)
 
 
-# -------------------------------------------------
-# 2. SAVE MATCHES
-# -------------------------------------------------
+# ============================================================
+# STEP 2
+# GET MATCH INFORMATION
+# ============================================================
 
-print("STEP 2: Saving match information...")
+print("")
+print("STEP 2: Getting match information...")
 
-for match_id, info in match_map.items():
 
-    cur.execute("""
+# Process match IDs in groups.
+for start in range(0, len(match_ids), 300):
+
+    group = match_ids[start:start + 300]
+
+    ids = []
+
+    for x in group:
+        safe = x.replace("'", "''")
+        ids.append("'" + safe + "'")
+
+    id_text = ",".join(ids)
+
+    sql = f"""
+    SELECT
+        match_id,
+        start_date,
+        venue,
+        team1,
+        team2,
+        winner
+    FROM match_info
+    WHERE match_id IN ({id_text})
+    """
+
+    rows = query(sql)
+
+    for row in rows:
+
+        match_id = str(val(row, "match_id", ""))
+
+        if not match_id:
+            continue
+
+        cur.execute("""
         INSERT OR REPLACE INTO matches
         (
             match_id,
@@ -179,35 +237,39 @@ for match_id, info in match_map.items():
             winner
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        match_id,
-        "IPL",
-        "T20",
-        info["date"],
-        info["venue"],
-        info["team1"],
-        info["team2"],
-        info["winner"]
-    ))
+        """, (
+            match_id,
+            "IPL",
+            "T20",
+            str(val(row, "start_date", "")),
+            str(val(row, "venue", "")),
+            str(val(row, "team1", "")),
+            str(val(row, "team2", "")),
+            str(val(row, "winner", ""))
+        ))
 
-db.commit()
+    db.commit()
 
-print("Match information saved.")
+    print(
+        "Match information:",
+        min(start + 300, len(match_ids)),
+        "/",
+        len(match_ids)
+    )
 
 
-# -------------------------------------------------
-# 3. GET IPL DELIVERIES IN BATCHES
-# -------------------------------------------------
+# ============================================================
+# STEP 3
+# GET IPL BALL-BY-BALL
+# ============================================================
 
 print("")
-print("STEP 3: Getting IPL ball-by-ball data...")
-print("Using 1000-row batches.")
+print("STEP 3: Getting IPL deliveries...")
+print("This may take some time.")
 
-
-delivery_rows = []
 
 offset = 0
-batch_size = 1000
+total_deliveries = 0
 
 while True:
 
@@ -228,68 +290,72 @@ while True:
         innings,
         over_no,
         delivery_in_over
-    LIMIT {batch_size}
+    LIMIT {batch}
     OFFSET {offset}
     """
 
-    rows = run_sql(sql)
+    rows = query(sql)
 
     if not rows:
         break
 
-    print(
-        "Batch:",
-        offset,
-        "-",
-        offset + len(rows),
-        "| Total received:",
-        offset + len(rows)
-    )
+    insert_rows = []
 
     for row in rows:
 
-        match_id = str(value(row, "match_id", ""))
-
-        if not match_id:
-            continue
+        match_id = str(val(row, "match_id", ""))
 
         try:
-            innings = int(value(row, "innings", 0))
+            innings = int(val(row, "innings", 0))
         except:
             innings = 0
 
         try:
-            over_no = int(value(row, "over_no", 0))
+            over_no = int(val(row, "over_no", 0))
         except:
             over_no = 0
 
         try:
-            delivery_no = int(value(row, "delivery_in_over", 0))
+            delivery_no = int(
+                val(row, "delivery_in_over", 0)
+            )
         except:
             delivery_no = 0
 
-        batting = str(value(row, "batting_team", ""))
-        bowling = str(value(row, "bowling_team", ""))
+        batting = str(
+            val(row, "batting_team", "")
+        )
+
+        bowling = str(
+            val(row, "bowling_team", "")
+        )
 
         try:
-            runs = int(value(row, "runs_off_bat", 0) or 0)
+            bat_runs = int(
+                val(row, "runs_off_bat", 0) or 0
+            )
         except:
-            runs = 0
+            bat_runs = 0
 
         try:
-            extras = int(value(row, "extras", 0) or 0)
+            extras = int(
+                val(row, "extras", 0) or 0
+            )
         except:
             extras = 0
 
-        wicket_type = str(value(row, "wicket_type", "") or "")
+        wicket_type = str(
+            val(row, "wicket_type", "") or ""
+        )
 
         wicket = 1 if wicket_type else 0
 
+        # Human-readable ball number.
         ball_no = float(
             str(over_no) + "." + str(delivery_no)
         )
 
-        delivery_rows.append((
+        insert_rows.append((
             match_id,
             "IPL",
             innings,
@@ -297,29 +363,11 @@ while True:
             ball_no,
             batting,
             bowling,
-            runs + extras,
+            bat_runs + extras,
             wicket
         ))
 
-    offset += len(rows)
-
-    if len(rows) < batch_size:
-        break
-
-    time.sleep(0.2)
-
-
-print("")
-print("Total deliveries collected:", len(delivery_rows))
-
-
-# -------------------------------------------------
-# 4. SAVE DELIVERIES
-# -------------------------------------------------
-
-print("STEP 4: Saving deliveries...")
-
-cur.executemany("""
+    cur.executemany("""
     INSERT INTO deliveries
     (
         match_id,
@@ -333,18 +381,33 @@ cur.executemany("""
         wickets
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-""", delivery_rows)
+    """, insert_rows)
 
-db.commit()
+    db.commit()
 
-print("Deliveries saved.")
+    total_deliveries += len(insert_rows)
+
+    print(
+        "Deliveries:",
+        total_deliveries
+    )
+
+    offset += len(rows)
+
+    if len(rows) < batch:
+        break
+
+    time.sleep(0.2)
 
 
-# -------------------------------------------------
-# 5. CREATE WIN STATES
-# -------------------------------------------------
+# ============================================================
+# STEP 4
+# WIN STATES
+# ============================================================
 
-print("STEP 5: Creating historical win states...")
+print("")
+print("STEP 4: Creating historical win states...")
+
 
 cur.execute("""
 SELECT
@@ -360,7 +423,10 @@ LEFT JOIN matches m
 ON d.match_id = m.match_id
 WHERE m.winner IS NOT NULL
 AND m.winner != ''
-ORDER BY d.match_id, d.innings_no, d.ball_no
+ORDER BY
+    d.match_id,
+    d.innings_no,
+    d.ball_no
 """)
 
 state_rows = []
@@ -390,31 +456,38 @@ for row in cur.fetchall():
         won
     ))
 
+
 cur.executemany("""
-    INSERT INTO win_states
-    (
-        match_id,
-        league,
-        innings_no,
-        ball_no,
-        batting_team,
-        bowling_team,
-        wickets,
-        won
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO win_states
+(
+    match_id,
+    league,
+    innings_no,
+    ball_no,
+    batting_team,
+    bowling_team,
+    wickets,
+    won
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 """, state_rows)
 
 db.commit()
 
-print("Win states:", len(state_rows))
+print(
+    "Win states:",
+    len(state_rows)
+)
 
 
-# -------------------------------------------------
-# 6. INDEXES
-# -------------------------------------------------
+# ============================================================
+# STEP 5
+# INDEXES
+# ============================================================
 
-print("STEP 6: Creating indexes...")
+print("")
+print("STEP 5: Creating indexes...")
+
 
 cur.execute("""
 CREATE INDEX idx_deliveries_match
@@ -423,7 +496,10 @@ ON deliveries(match_id)
 
 cur.execute("""
 CREATE INDEX idx_deliveries_teams
-ON deliveries(batting_team, bowling_team)
+ON deliveries(
+    batting_team,
+    bowling_team
+)
 """)
 
 cur.execute("""
@@ -445,14 +521,15 @@ ON matches(league)
 db.commit()
 
 
-# -------------------------------------------------
-# 7. FINAL COUNTS
-# -------------------------------------------------
+# ============================================================
+# FINAL
+# ============================================================
 
 print("")
-print("======================================")
+print("==========================================")
 print(" DATABASE BUILD COMPLETE")
-print("======================================")
+print("==========================================")
+
 
 for table in [
     "matches",
@@ -466,10 +543,15 @@ for table in [
 
     count = cur.fetchone()[0]
 
-    print(table, ":", count)
+    print(
+        table,
+        ":",
+        count
+    )
+
 
 db.close()
 
 print("")
-print("Created:", DB_FILE)
+print("cricket_history.db CREATED SUCCESSFULLY")
 print("DREAM PROJECT IPL DATABASE READY")
