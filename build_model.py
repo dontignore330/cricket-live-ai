@@ -1,11 +1,18 @@
 import os
 import json
 import zipfile
-import urllib.request
-import urllib.error
 import sqlite3
+import subprocess
+import shutil
 import time
+import requests
 
+
+# =========================================================
+# DREAM PROJECT - DATA BUILDER
+# =========================================================
+
+DB = "cricket_history.db"
 
 URLS = {
     "IPL": "https://cricsheet.org/downloads/ipl_json.zip",
@@ -14,8 +21,9 @@ URLS = {
 }
 
 
-DB = "cricket_history.db"
-
+# =========================================================
+# DOWNLOAD
+# =========================================================
 
 def download(league):
 
@@ -29,18 +37,109 @@ def download(league):
     )
 
     print("")
-    print("==============================")
-    print("Downloading:", league)
+    print("========================================")
+    print("DOWNLOADING:", league)
     print("URL:", url)
-    print("==============================")
+    print("========================================")
 
-    # Remove old/broken file
     if os.path.exists(path):
         os.remove(path)
 
+    # -----------------------------------------------------
+    # METHOD 1: CURL
+    # -----------------------------------------------------
+
+    curl_path = shutil.which("curl")
+
+    if curl_path:
+
+        print("Download method: CURL")
+
+        command = [
+            curl_path,
+            "-L",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--retry",
+            "5",
+            "--retry-delay",
+            "3",
+            "--connect-timeout",
+            "30",
+            "--max-time",
+            "600",
+            "-A",
+            "Mozilla/5.0",
+            "-H",
+            "Accept: application/zip,application/octet-stream,*/*",
+            "-o",
+            path,
+            url
+        ]
+
+        try:
+
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True
+            )
+
+            if result.returncode != 0:
+
+                print(
+                    "CURL failed:",
+                    result.stderr
+                )
+
+            else:
+
+                if os.path.exists(path):
+
+                    size = os.path.getsize(path)
+
+                    print(
+                        "Downloaded bytes:",
+                        size
+                    )
+
+                    if size > 1000 and zipfile.is_zipfile(path):
+
+                        print(
+                            league,
+                            "ZIP downloaded successfully."
+                        )
+
+                        return path
+
+                    print(
+                        "CURL returned invalid/non-ZIP file."
+                    )
+
+                    if os.path.exists(path):
+                        os.remove(path)
+
+        except Exception as error:
+
+            print(
+                "CURL exception:",
+                error
+            )
+
+            if os.path.exists(path):
+                os.remove(path)
+
+    # -----------------------------------------------------
+    # METHOD 2: REQUESTS FALLBACK
+    # -----------------------------------------------------
+
+    print("Download method: REQUESTS fallback")
+
     headers = {
         "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "Mozilla/5.0 "
+            "(Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 "
             "(KHTML, like Gecko) "
             "Chrome/131.0 Safari/537.36"
@@ -48,79 +147,81 @@ def download(league):
         "Accept": (
             "application/zip,"
             "application/octet-stream,"
-            "application/x-zip-compressed,"
             "*/*"
         ),
         "Accept-Language": "en-US,en;q=0.9",
-        "Connection": "close",
+        "Referer": "https://cricsheet.org/downloads/"
     }
-
-    request = urllib.request.Request(
-        url,
-        headers=headers,
-        method="GET"
-    )
 
     try:
 
-        with urllib.request.urlopen(
-            request,
-            timeout=300
-        ) as response:
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=600,
+            allow_redirects=True,
+            stream=True
+        )
 
-            final_url = response.geturl()
-            status = response.status
-            content_type = response.headers.get(
+        print(
+            "HTTP status:",
+            response.status_code
+        )
+
+        print(
+            "Final URL:",
+            response.url
+        )
+
+        print(
+            "Content-Type:",
+            response.headers.get(
                 "Content-Type",
                 ""
             )
+        )
 
-            print("HTTP status:", status)
-            print("Final URL:", final_url)
-            print("Content-Type:", content_type)
+        response.raise_for_status()
 
-            data = response.read()
+        with open(path, "wb") as file:
+
+            for chunk in response.iter_content(
+                chunk_size=1024 * 1024
+            ):
+
+                if chunk:
+
+                    file.write(chunk)
+
+        size = os.path.getsize(path)
 
         print(
             "Downloaded bytes:",
-            len(data)
+            size
         )
 
-        # A normal ZIP file starts with PK.
-        if not data.startswith(b"PK"):
-
-            print("")
-            print(
-                "ERROR: Server returned something other than ZIP."
-            )
-
-            print(
-                "First 200 bytes:"
-            )
-
-            print(
-                repr(data[:200])
-            )
+        if size <= 1000:
 
             raise RuntimeError(
-                f"{league} server returned HTML/non-ZIP data."
+                "Downloaded file is too small."
             )
 
-        # Save ZIP
-        with open(
-            path,
-            "wb"
-        ) as file:
-
-            file.write(data)
-
-        # Extra ZIP validation
         if not zipfile.is_zipfile(path):
 
-            os.remove(path)
+            with open(
+                path,
+                "rb"
+            ) as file:
+
+                first_bytes = file.read(200)
+
+            print(
+                "First bytes:",
+                repr(first_bytes)
+            )
 
             raise RuntimeError(
-                f"{league} downloaded file failed ZIP validation."
+                f"{league} downloaded file is NOT a valid ZIP."
             )
 
         print(
@@ -129,29 +230,6 @@ def download(league):
         )
 
         return path
-
-    except urllib.error.HTTPError as error:
-
-        print(
-            "HTTP ERROR:",
-            error.code,
-            error.reason
-        )
-
-        raise RuntimeError(
-            f"Could not download {league}: HTTP {error.code}"
-        )
-
-    except urllib.error.URLError as error:
-
-        print(
-            "URL ERROR:",
-            error.reason
-        )
-
-        raise RuntimeError(
-            f"Could not download {league}: {error.reason}"
-        )
 
     except Exception as error:
 
@@ -163,23 +241,49 @@ def download(league):
         )
 
 
-def build():
+# =========================================================
+# DATABASE
+# =========================================================
 
-    print("")
-    print("==============================")
-    print("STARTING CRICKET DATA BUILD")
-    print("==============================")
+def create_database():
 
-    # Delete old database
     if os.path.exists(DB):
+
         os.remove(DB)
 
     connection = sqlite3.connect(DB)
+
     cursor = connection.cursor()
+
+    # -----------------------------------------------------
+    # MATCHES
+    # -----------------------------------------------------
+
+    cursor.execute("""
+        CREATE TABLE matches(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            league TEXT,
+            match_file TEXT,
+            venue TEXT,
+            city TEXT,
+            date TEXT,
+            season TEXT,
+            gender TEXT,
+            match_type TEXT,
+            team1 TEXT,
+            team2 TEXT,
+            winner TEXT
+        )
+    """)
+
+    # -----------------------------------------------------
+    # DELIVERIES
+    # -----------------------------------------------------
 
     cursor.execute("""
         CREATE TABLE deliveries(
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER,
             league TEXT,
             venue TEXT,
             date TEXT,
@@ -189,13 +293,19 @@ def build():
             ball_no INTEGER,
             over_no INTEGER,
             wickets INTEGER,
-            runs INTEGER
+            runs INTEGER,
+            total_runs INTEGER
         )
     """)
 
+    # -----------------------------------------------------
+    # FUTURE SAMPLES
+    # -----------------------------------------------------
+
     cursor.execute("""
         CREATE TABLE samples(
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER,
             league TEXT,
             venue TEXT,
             date TEXT,
@@ -206,13 +316,18 @@ def build():
             target_ball INTEGER,
             wickets INTEGER,
             current_runs INTEGER,
-            runs_to_target INTEGER
+            future_runs INTEGER
         )
     """)
 
+    # -----------------------------------------------------
+    # WIN STATES
+    # -----------------------------------------------------
+
     cursor.execute("""
         CREATE TABLE win_states(
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER,
             league TEXT,
             venue TEXT,
             innings_no INTEGER,
@@ -224,21 +339,44 @@ def build():
         )
     """)
 
+    connection.commit()
+
+    return connection, cursor
+
+
+# =========================================================
+# BUILD
+# =========================================================
+
+def build():
+
+    print("")
+    print("========================================")
+    print("DREAM PROJECT DATA BUILD")
+    print("========================================")
+
+    connection, cursor = create_database()
+
     delivery_count = 0
     sample_count = 0
     win_count = 0
+    match_count = 0
+
+    # =====================================================
+    # EACH LEAGUE
+    # =====================================================
 
     for league in URLS:
 
         print("")
-        print("==============================")
-        print("PROCESSING", league)
-        print("==============================")
+        print("========================================")
+        print("PROCESSING:", league)
+        print("========================================")
 
         zip_path = download(league)
 
         print(
-            "Opening ZIP:",
+            "Opening:",
             zip_path
         )
 
@@ -249,23 +387,41 @@ def build():
 
             filenames = archive.namelist()
 
+            json_files = [
+                filename
+                for filename in filenames
+                if filename.lower().endswith(".json")
+            ]
+
             print(
-                "Files in ZIP:",
-                len(filenames)
+                "JSON matches found:",
+                len(json_files)
             )
 
-            for filename in filenames:
-
-                if not filename.endswith(".json"):
-                    continue
+            for file_number, filename in enumerate(
+                json_files,
+                start=1
+            ):
 
                 try:
 
-                    match = json.loads(
-                        archive.read(filename)
+                    raw = archive.read(
+                        filename
                     )
 
-                except Exception:
+                    match = json.loads(
+                        raw.decode(
+                            "utf-8"
+                        )
+                    )
+
+                except Exception as error:
+
+                    print(
+                        "Skipping bad JSON:",
+                        filename,
+                        error
+                    )
 
                     continue
 
@@ -274,14 +430,24 @@ def build():
                     {}
                 )
 
-                venue = info.get(
-                    "venue",
-                    ""
-                ) or ""
+                # -------------------------------------------------
+                # BASIC MATCH INFO
+                # -------------------------------------------------
 
-                teams = info.get(
-                    "teams",
-                    []
+                venue = (
+                    info.get(
+                        "venue",
+                        ""
+                    )
+                    or ""
+                )
+
+                city = (
+                    info.get(
+                        "city",
+                        ""
+                    )
+                    or ""
                 )
 
                 dates = info.get(
@@ -295,13 +461,101 @@ def build():
                     else ""
                 )
 
-                winner = info.get(
+                season = str(
+                    info.get(
+                        "season",
+                        ""
+                    )
+                )
+
+                gender = (
+                    info.get(
+                        "gender",
+                        ""
+                    )
+                    or ""
+                )
+
+                match_type = (
+                    info.get(
+                        "match_type",
+                        ""
+                    )
+                    or ""
+                )
+
+                teams = info.get(
+                    "teams",
+                    []
+                )
+
+                team1 = (
+                    teams[0]
+                    if len(teams) >= 1
+                    else ""
+                )
+
+                team2 = (
+                    teams[1]
+                    if len(teams) >= 2
+                    else ""
+                )
+
+                outcome = info.get(
                     "outcome",
                     {}
-                ).get(
+                )
+
+                winner = outcome.get(
                     "winner",
                     ""
                 )
+
+                # -------------------------------------------------
+                # SAVE MATCH
+                # -------------------------------------------------
+
+                cursor.execute(
+                    """
+                    INSERT INTO matches(
+                        league,
+                        match_file,
+                        venue,
+                        city,
+                        date,
+                        season,
+                        gender,
+                        match_type,
+                        team1,
+                        team2,
+                        winner
+                    )
+                    VALUES(
+                        ?,?,?,?,?,?,?,?,?,?,?
+                    )
+                    """,
+                    (
+                        league,
+                        filename,
+                        venue,
+                        city,
+                        date,
+                        season,
+                        gender,
+                        match_type,
+                        team1,
+                        team2,
+                        winner
+                    )
+                )
+
+                match_id = cursor.lastrowid
+
+                match_count += 1
+
+                # -------------------------------------------------
+                # INNINGS
+                # -------------------------------------------------
 
                 innings_list = match.get(
                     "innings",
@@ -318,6 +572,7 @@ def build():
                         ""
                     )
 
+                    # Find other team.
                     bowling_team = next(
                         (
                             team
@@ -327,11 +582,15 @@ def build():
                         ""
                     )
 
-                    rows = []
-
                     legal_ball = 0
                     total_runs = 0
                     wickets = 0
+
+                    rows = []
+
+                    # -------------------------------------------------
+                    # OVERS
+                    # -------------------------------------------------
 
                     for over_data in innings.get(
                         "overs",
@@ -350,25 +609,27 @@ def build():
                             []
                         ):
 
-                            runs = int(
-                                delivery
-                                .get(
-                                    "runs",
-                                    {}
-                                )
-                                .get(
+                            run_data = delivery.get(
+                                "runs",
+                                {}
+                            )
+
+                            ball_runs = int(
+                                run_data.get(
                                     "total",
                                     0
                                 )
                             )
 
-                            total_runs += runs
+                            total_runs += ball_runs
+
+                            wicket_list = delivery.get(
+                                "wickets",
+                                []
+                            )
 
                             wickets += len(
-                                delivery.get(
-                                    "wickets",
-                                    []
-                                )
+                                wicket_list
                             )
 
                             extras = delivery.get(
@@ -376,9 +637,8 @@ def build():
                                 {}
                             )
 
-                            # Wides and no-balls
-                            # are not legal balls.
-                            legal = not (
+                            # Wide and no-ball are not legal balls.
+                            is_legal = not (
                                 extras.get(
                                     "wides",
                                     0
@@ -390,26 +650,34 @@ def build():
                                 )
                             )
 
-                            if legal:
+                            if not is_legal:
+                                continue
 
-                                legal_ball += 1
+                            legal_ball += 1
 
-                                rows.append({
+                            rows.append(
+                                {
                                     "ball_no": legal_ball,
                                     "over_no": over_no,
-                                    "wickets": wickets,
-                                    "total_runs": total_runs
-                                })
+                                    "runs": ball_runs,
+                                    "total_runs": total_runs,
+                                    "wickets": wickets
+                                }
+                            )
 
                     if not rows:
                         continue
 
-                    # Save delivery states
+                    # -------------------------------------------------
+                    # SAVE DELIVERY STATES
+                    # -------------------------------------------------
+
                     for row in rows:
 
                         cursor.execute(
                             """
                             INSERT INTO deliveries(
+                                match_id,
                                 league,
                                 venue,
                                 date,
@@ -419,13 +687,15 @@ def build():
                                 ball_no,
                                 over_no,
                                 wickets,
-                                runs
+                                runs,
+                                total_runs
                             )
                             VALUES(
-                                ?,?,?,?,?,?,?,?,?,?
+                                ?,?,?,?,?,?,?,?,?,?,?,?
                             )
                             """,
                             (
+                                match_id,
                                 league,
                                 venue,
                                 date,
@@ -435,19 +705,22 @@ def build():
                                 row["ball_no"],
                                 row["over_no"],
                                 row["wickets"],
-                                0
+                                row["runs"],
+                                row["total_runs"]
                             )
                         )
 
                         delivery_count += 1
 
-                    # Maximum 120 legal balls
+                    # -------------------------------------------------
+                    # FUTURE RUN SAMPLES
+                    # -------------------------------------------------
+
                     max_ball = min(
                         120,
                         rows[-1]["ball_no"]
                     )
 
-                    # Create historical future-target samples
                     for row in rows:
 
                         current_ball = row[
@@ -462,6 +735,7 @@ def build():
                             "wickets"
                         ]
 
+                        # Only create samples for future balls.
                         for target_ball in range(
                             current_ball + 1,
                             max_ball + 1
@@ -479,6 +753,7 @@ def build():
                             cursor.execute(
                                 """
                                 INSERT INTO samples(
+                                    match_id,
                                     league,
                                     venue,
                                     date,
@@ -489,13 +764,14 @@ def build():
                                     target_ball,
                                     wickets,
                                     current_runs,
-                                    runs_to_target
+                                    future_runs
                                 )
                                 VALUES(
-                                    ?,?,?,?,?,?,?,?,?,?,?
+                                    ?,?,?,?,?,?,?,?,?,?,?,?
                                 )
                                 """,
                                 (
+                                    match_id,
                                     league,
                                     venue,
                                     date,
@@ -512,12 +788,24 @@ def build():
 
                             sample_count += 1
 
-                        # Match winner information
-                        if winner:
+                    # -------------------------------------------------
+                    # WIN STATES
+                    # -------------------------------------------------
+
+                    if winner:
+
+                        for row in rows:
+
+                            won = (
+                                1
+                                if winner == batting_team
+                                else 0
+                            )
 
                             cursor.execute(
                                 """
                                 INSERT INTO win_states(
+                                    match_id,
                                     league,
                                     venue,
                                     innings_no,
@@ -528,105 +816,134 @@ def build():
                                     won
                                 )
                                 VALUES(
-                                    ?,?,?,?,?,?,?,?
+                                    ?,?,?,?,?,?,?,?,?
                                 )
                                 """,
                                 (
+                                    match_id,
                                     league,
                                     venue,
                                     innings_no,
                                     batting_team,
                                     bowling_team,
-                                    current_ball,
-                                    current_wickets,
-                                    1
-                                    if winner == batting_team
-                                    else 0
+                                    row["ball_no"],
+                                    row["wickets"],
+                                    won
                                 )
                             )
 
                             win_count += 1
 
-                    # Commit periodically
-                    if delivery_count % 100000 == 0:
+                # -------------------------------------------------
+                # PERIODIC COMMIT
+                # -------------------------------------------------
 
-                        connection.commit()
+                if match_count % 100 == 0:
 
-                        print(
-                            "Deliveries:",
-                            delivery_count,
-                            "Samples:",
-                            sample_count,
-                            "Win states:",
-                            win_count
-                        )
+                    connection.commit()
+
+                    print(
+                        "Progress:",
+                        match_count,
+                        "matches |",
+                        delivery_count,
+                        "deliveries |",
+                        sample_count,
+                        "samples"
+                    )
+
+        # Remove ZIP after processing.
+        try:
+
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
+
+        except Exception:
+            pass
+
+        connection.commit()
+
+    # =====================================================
+    # INDEXES
+    # =====================================================
 
     print("")
-    print("==============================")
+    print("========================================")
     print("CREATING INDEXES")
-    print("==============================")
+    print("========================================")
 
-    cursor.execute(
-        """
-        CREATE INDEX idx_samples_target
+    cursor.execute("""
+        CREATE INDEX idx_deliveries_context
+        ON deliveries(
+            league,
+            ball_no,
+            wickets,
+            batting_team,
+            bowling_team
+        )
+    """)
+
+    cursor.execute("""
+        CREATE INDEX idx_samples_context
         ON samples(
             league,
             target_ball,
-            ball_no
+            ball_no,
+            wickets,
+            batting_team,
+            bowling_team
         )
-        """
-    )
+    """)
 
-    cursor.execute(
-        """
-        CREATE INDEX idx_samples_context
+    cursor.execute("""
+        CREATE INDEX idx_samples_venue
         ON samples(
             venue,
-            batting_team,
-            bowling_team,
             innings_no,
-            wickets
+            wickets,
+            ball_no
         )
-        """
-    )
+    """)
 
-    cursor.execute(
-        """
-        CREATE INDEX idx_samples_team
-        ON samples(
-            batting_team,
-            bowling_team,
-            innings_no,
-            wickets
-        )
-        """
-    )
-
-    cursor.execute(
-        """
-        CREATE INDEX idx_win
+    cursor.execute("""
+        CREATE INDEX idx_win_context
         ON win_states(
             league,
             innings_no,
             ball_no,
-            wickets
+            wickets,
+            batting_team,
+            bowling_team
         )
-        """
-    )
+    """)
+
+    cursor.execute("""
+        CREATE INDEX idx_matches_league
+        ON matches(
+            league,
+            date
+        )
+    """)
 
     connection.commit()
 
     connection.close()
 
     print("")
-    print("==============================")
+    print("========================================")
     print("BUILD COMPLETE")
-    print("==============================")
+    print("========================================")
+    print("Matches:", match_count)
     print("Deliveries:", delivery_count)
     print("Samples:", sample_count)
     print("Win states:", win_count)
-    print("==============================")
+    print("Database:", DB)
+    print("========================================")
 
+
+# =========================================================
+# START
+# =========================================================
 
 if __name__ == "__main__":
     build()
