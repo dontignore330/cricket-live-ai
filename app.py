@@ -18,14 +18,175 @@ DB = "cricket_history.db"
 
 
 # =========================================================
-# DATABASE CONNECTION
+# TEAM DATABASE
+# =========================================================
+
+TEAMS = {
+
+    "IPL": [
+        "Chennai Super Kings",
+        "Delhi Capitals",
+        "Gujarat Titans",
+        "Kolkata Knight Riders",
+        "Lucknow Super Giants",
+        "Mumbai Indians",
+        "Punjab Kings",
+        "Rajasthan Royals",
+        "Royal Challengers Bengaluru",
+        "Sunrisers Hyderabad"
+    ],
+
+    "BBL": [
+        "Adelaide Strikers",
+        "Brisbane Heat",
+        "Hobart Hurricanes",
+        "Melbourne Renegades",
+        "Melbourne Stars",
+        "Perth Scorchers",
+        "Sydney Sixers",
+        "Sydney Thunder"
+    ],
+
+    "WBBL": [
+        "Adelaide Strikers",
+        "Brisbane Heat",
+        "Hobart Hurricanes",
+        "Melbourne Renegades",
+        "Melbourne Stars",
+        "Perth Scorchers",
+        "Sydney Sixers",
+        "Sydney Thunder"
+    ],
+
+    "PSL": [
+        "Islamabad United",
+        "Karachi Kings",
+        "Lahore Qalandars",
+        "Multan Sultans",
+        "Peshawar Zalmi",
+        "Quetta Gladiators"
+    ],
+
+    "BPL": [
+        "Chattogram Challengers",
+        "Comilla Victorians",
+        "Dhaka Capitals",
+        "Fortune Barishal",
+        "Khulna Tigers",
+        "Rangpur Riders",
+        "Sylhet Strikers"
+    ],
+
+    "CPL": [
+        "Barbados Royals",
+        "Guyana Amazon Warriors",
+        "Jamaica Tallawahs",
+        "Saint Lucia Kings",
+        "St Kitts & Nevis Patriots",
+        "Trinbago Knight Riders"
+    ],
+
+    "ILT20": [
+        "Abu Dhabi Knight Riders",
+        "Desert Vipers",
+        "Dubai Capitals",
+        "Gulf Giants",
+        "MI Emirates",
+        "Sharjah Warriorz"
+    ],
+
+    "T20 World Cup": [
+        "India",
+        "Australia",
+        "England",
+        "New Zealand",
+        "Pakistan",
+        "South Africa",
+        "Sri Lanka",
+        "Bangladesh",
+        "Afghanistan",
+        "West Indies",
+        "Ireland",
+        "Scotland",
+        "Zimbabwe",
+        "Nepal",
+        "Namibia",
+        "United States"
+    ],
+
+    "ODI": [
+        "India",
+        "Australia",
+        "England",
+        "New Zealand",
+        "Pakistan",
+        "South Africa",
+        "Sri Lanka",
+        "Bangladesh",
+        "Afghanistan",
+        "West Indies",
+        "Ireland",
+        "Zimbabwe"
+    ],
+
+    "Test": [
+        "India",
+        "Australia",
+        "England",
+        "New Zealand",
+        "Pakistan",
+        "South Africa",
+        "Sri Lanka",
+        "Bangladesh",
+        "Afghanistan",
+        "West Indies"
+    ],
+
+    "Other": [
+        "India",
+        "Australia",
+        "England",
+        "New Zealand",
+        "Pakistan",
+        "South Africa",
+        "Sri Lanka",
+        "Bangladesh"
+    ]
+}
+
+
+# =========================================================
+# DATABASE
 # =========================================================
 
 def get_connection():
+
     if not os.path.exists(DB):
         return None
 
-    return sqlite3.connect(DB)
+    try:
+        return sqlite3.connect(DB)
+    except Exception:
+        return None
+
+
+def table_columns(connection, table_name):
+
+    try:
+
+        cursor = connection.cursor()
+
+        cursor.execute(
+            f"PRAGMA table_info({table_name})"
+        )
+
+        rows = cursor.fetchall()
+
+        return [row[1] for row in rows]
+
+    except Exception:
+
+        return []
 
 
 # =========================================================
@@ -46,46 +207,59 @@ def calculate_win_percentage(
     if connection is None:
         return None
 
-    # -----------------------------------------------------
-    # First try: same league + same innings + same ball
-    # + similar wicket situation
-    # -----------------------------------------------------
-
-    query = """
-        SELECT won
-        FROM win_states
-        WHERE league = ?
-          AND innings_no = ?
-          AND ball_no BETWEEN ? AND ?
-          AND wickets BETWEEN ? AND ?
-    """
-
-    lower_ball = max(1, ball_no - 1)
-    upper_ball = ball_no + 1
-
-    lower_wickets = max(0, wickets - 1)
-    upper_wickets = min(10, wickets + 1)
-
     try:
 
-        data = pd.read_sql_query(
-            query,
+        columns = table_columns(
             connection,
-            params=(
-                league,
-                innings_no,
-                lower_ball,
-                upper_ball,
-                lower_wickets,
-                upper_wickets
-            )
+            "win_states"
         )
 
+        if "league" not in columns:
+            connection.close()
+            return None
+
         # -------------------------------------------------
-        # If too few results, widen the search.
+        # TEAM-AWARE SEARCH
         # -------------------------------------------------
 
-        if len(data) < 20:
+        team_columns_available = (
+            "batting_team" in columns
+            and "bowling_team" in columns
+        )
+
+        if team_columns_available:
+
+            query = """
+                SELECT won
+                FROM win_states
+                WHERE league = ?
+                  AND batting_team = ?
+                  AND bowling_team = ?
+                  AND innings_no = ?
+                  AND ball_no BETWEEN ? AND ?
+                  AND wickets BETWEEN ? AND ?
+            """
+
+            data = pd.read_sql_query(
+                query,
+                connection,
+                params=(
+                    league,
+                    batting_team,
+                    bowling_team,
+                    innings_no,
+                    max(1, ball_no - 1),
+                    ball_no + 1,
+                    max(0, wickets - 1),
+                    min(10, wickets + 1)
+                )
+            )
+
+        else:
+
+            # -------------------------------------------------
+            # OLD DATABASE COMPATIBILITY
+            # -------------------------------------------------
 
             query = """
                 SELECT won
@@ -93,10 +267,8 @@ def calculate_win_percentage(
                 WHERE league = ?
                   AND innings_no = ?
                   AND ball_no BETWEEN ? AND ?
+                  AND wickets BETWEEN ? AND ?
             """
-
-            lower_ball = max(1, ball_no - 3)
-            upper_ball = ball_no + 3
 
             data = pd.read_sql_query(
                 query,
@@ -104,14 +276,69 @@ def calculate_win_percentage(
                 params=(
                     league,
                     innings_no,
-                    lower_ball,
-                    upper_ball
+                    max(1, ball_no - 1),
+                    ball_no + 1,
+                    max(0, wickets - 1),
+                    min(10, wickets + 1)
                 )
             )
 
+
         # -------------------------------------------------
-        # If still too little data, use all leagues
-        # with same innings / ball / wickets.
+        # WIDER SEARCH
+        # -------------------------------------------------
+
+        if len(data) < 20:
+
+            if team_columns_available:
+
+                query = """
+                    SELECT won
+                    FROM win_states
+                    WHERE league = ?
+                      AND batting_team = ?
+                      AND bowling_team = ?
+                      AND innings_no = ?
+                      AND ball_no BETWEEN ? AND ?
+                """
+
+                data = pd.read_sql_query(
+                    query,
+                    connection,
+                    params=(
+                        league,
+                        batting_team,
+                        bowling_team,
+                        innings_no,
+                        max(1, ball_no - 3),
+                        ball_no + 3
+                    )
+                )
+
+            else:
+
+                query = """
+                    SELECT won
+                    FROM win_states
+                    WHERE league = ?
+                      AND innings_no = ?
+                      AND ball_no BETWEEN ? AND ?
+                """
+
+                data = pd.read_sql_query(
+                    query,
+                    connection,
+                    params=(
+                        league,
+                        innings_no,
+                        max(1, ball_no - 3),
+                        ball_no + 3
+                    )
+                )
+
+
+        # -------------------------------------------------
+        # FINAL FALLBACK
         # -------------------------------------------------
 
         if len(data) < 20:
@@ -131,15 +358,18 @@ def calculate_win_percentage(
                     innings_no,
                     max(1, ball_no - 3),
                     ball_no + 3,
-                    lower_wickets,
-                    upper_wickets
+                    max(0, wickets - 1),
+                    min(10, wickets + 1)
                 )
             )
 
+
         connection.close()
+
 
         if data.empty:
             return None
+
 
         total = len(data)
 
@@ -157,6 +387,7 @@ def calculate_win_percentage(
             no_count / total
         ) * 100
 
+
         return {
             "yes": yes_percentage,
             "no": no_percentage,
@@ -165,15 +396,19 @@ def calculate_win_percentage(
             "no_count": no_count
         }
 
+
     except Exception:
 
-        connection.close()
+        try:
+            connection.close()
+        except Exception:
+            pass
 
         return None
 
 
 # =========================================================
-# HISTORICAL FUTURE-RUN CALCULATION
+# FUTURE RUN CALCULATION
 # =========================================================
 
 def calculate_future_runs(
@@ -188,16 +423,16 @@ def calculate_future_runs(
     if connection is None:
         return None
 
-    query = """
-        SELECT future_runs
-        FROM samples
-        WHERE league = ?
-          AND innings_no = ?
-          AND ball_no BETWEEN ? AND ?
-          AND target_ball = ?
-    """
-
     try:
+
+        query = """
+            SELECT future_runs
+            FROM samples
+            WHERE league = ?
+              AND innings_no = ?
+              AND ball_no BETWEEN ? AND ?
+              AND target_ball = ?
+        """
 
         data = pd.read_sql_query(
             query,
@@ -228,7 +463,10 @@ def calculate_future_runs(
 
     except Exception:
 
-        connection.close()
+        try:
+            connection.close()
+        except Exception:
+            pass
 
         return None
 
@@ -289,8 +527,10 @@ if os.path.exists(DB):
 
     except Exception:
 
-        if connection:
+        try:
             connection.close()
+        except Exception:
+            pass
 
         st.warning(
             "Database found, but statistics could not be read."
@@ -300,6 +540,11 @@ else:
 
     st.error(
         "Historical database not found."
+    )
+
+    st.info(
+        "The app is running, but the historical cricket "
+        "database has not been connected yet."
     )
 
 
@@ -312,6 +557,7 @@ st.divider()
 st.header("🏏 Current Match")
 
 col1, col2 = st.columns(2)
+
 
 with col1:
 
@@ -329,18 +575,41 @@ with col1:
             "ODI",
             "Test",
             "Other"
-        ]
+        ],
+        key="league"
     )
 
-    batting_team = st.text_input(
+
+    teams = TEAMS.get(
+        league,
+        TEAMS["Other"]
+    )
+
+
+    batting_team = st.selectbox(
         "Batting Team",
-        placeholder="Example: India"
+        teams,
+        index=None,
+        placeholder="Select batting team",
+        key="batting_team"
     )
 
-    bowling_team = st.text_input(
+
+    bowling_options = [
+        team
+        for team in teams
+        if team != batting_team
+    ]
+
+
+    bowling_team = st.selectbox(
         "Bowling Team",
-        placeholder="Example: Australia"
+        bowling_options,
+        index=None,
+        placeholder="Select bowling team",
+        key="bowling_team"
     )
+
 
     ground = st.text_input(
         "Ground",
@@ -358,12 +627,14 @@ with col2:
         step=0.1
     )
 
+
     runs = st.number_input(
         "Current Runs",
         min_value=0,
         value=0,
         step=1
     )
+
 
     wickets = st.number_input(
         "Wickets",
@@ -373,8 +644,9 @@ with col2:
         step=1
     )
 
+
     target = st.number_input(
-        "Target / Session Number",
+        "Target / Future Ball",
         min_value=0,
         value=0,
         step=1
@@ -391,6 +663,7 @@ st.header("📊 Additional Current Information")
 
 col3, col4 = st.columns(2)
 
+
 with col3:
 
     last_over_runs = st.number_input(
@@ -400,6 +673,7 @@ with col3:
         value=0,
         step=1
     )
+
 
     balls_remaining = st.number_input(
         "Balls Remaining",
@@ -419,6 +693,7 @@ with col4:
             "2nd Innings"
         ]
     )
+
 
     match_format = st.selectbox(
         "Match Format",
@@ -448,14 +723,46 @@ analyze = st.button(
 
 if analyze:
 
+    if batting_team is None or bowling_team is None:
+
+        st.error(
+            "Please select both Batting Team and Bowling Team."
+        )
+
+        st.stop()
+
+
+    if batting_team == bowling_team:
+
+        st.error(
+            "Batting Team and Bowling Team cannot be the same."
+        )
+
+        st.stop()
+
+
+    if not os.path.exists(DB):
+
+        st.error(
+            "Historical database not found. "
+            "The app cannot calculate a real historical percentage "
+            "until the database is connected."
+        )
+
+        st.stop()
+
+
     innings_no = (
         1
         if innings == "1st Innings"
         else 2
     )
 
-    # Convert 2.3 style cricket over
-    # into approximate legal-ball number.
+
+    # -----------------------------------------------------
+    # CONVERT CRICKET OVER
+    # -----------------------------------------------------
+
     over_number = int(overs)
 
     decimal_part = round(
@@ -470,48 +777,71 @@ if analyze:
     if ball_in_over > 6:
         ball_in_over = 6
 
+    if ball_in_over < 0:
+        ball_in_over = 0
+
     current_ball = (
         over_number * 6
         + ball_in_over
     )
 
+
+    # -----------------------------------------------------
+    # ANALYSIS HEADER
+    # -----------------------------------------------------
+
     st.header("🧠 DREAM ANALYSIS")
 
+
     st.write(
-        f"**{batting_team or 'Batting Team'}** "
-        f"— **{runs}/{wickets}** "
+        f"**{batting_team}** "
+        f"vs "
+        f"**{bowling_team}**"
+    )
+
+
+    st.write(
+        f"Score: **{runs}/{wickets}** "
         f"after **{overs} overs**"
     )
+
 
     st.write(
         f"League: **{league}**"
     )
 
-    st.write(
-        f"Bowling Team: **{bowling_team or 'Not entered'}**"
-    )
 
     st.write(
         f"Ground: **{ground or 'Not entered'}**"
     )
 
+
     st.write(
         f"Innings: **{innings}**"
     )
+
 
     st.write(
         f"Format: **{match_format}**"
     )
 
+
     st.write(
         f"Historical ball position: **{current_ball}**"
     )
 
+
     st.divider()
+
+
+    # =====================================================
+    # HISTORICAL RESULT
+    # =====================================================
 
     st.subheader(
         "📈 Historical Result"
     )
+
 
     result = calculate_win_percentage(
         league=league,
@@ -522,16 +852,18 @@ if analyze:
         wickets=wickets
     )
 
+
     if result is None:
 
         st.warning(
-            "इस situation के लिए पर्याप्त historical data नहीं मिला। "
-            "इसलिए percentage नहीं बनाई गई।"
+            "इस situation के लिए पर्याप्त historical "
+            "data नहीं मिला। Percentage नहीं बनाई गई।"
         )
 
     else:
 
         result_col1, result_col2 = st.columns(2)
+
 
         with result_col1:
 
@@ -540,6 +872,7 @@ if analyze:
                 f"{result['yes']:.1f}%"
             )
 
+
         with result_col2:
 
             st.metric(
@@ -547,17 +880,22 @@ if analyze:
                 f"{result['no']:.1f}%"
             )
 
+
         st.info(
             f"Calculation based on "
             f"{result['total']:,} historical states."
         )
 
-        st.write(
-            f"Historical YES: **{result['yes_count']:,}**"
-        )
 
         st.write(
-            f"Historical NO: **{result['no_count']:,}**"
+            f"Historical YES: "
+            f"**{result['yes_count']:,}**"
+        )
+
+
+        st.write(
+            f"Historical NO: "
+            f"**{result['no_count']:,}**"
         )
 
 
@@ -573,7 +911,9 @@ if analyze:
             "🎯 Historical Future-Run Analysis"
         )
 
+
         target_ball = int(target)
+
 
         if target_ball > current_ball:
 
@@ -584,6 +924,7 @@ if analyze:
                 target_ball=target_ball
             )
 
+
             if future_result:
 
                 st.write(
@@ -591,15 +932,18 @@ if analyze:
                     f"**{future_result['samples']:,}**"
                 )
 
+
                 st.write(
                     f"Average future runs: "
                     f"**{future_result['average']:.2f}**"
                 )
 
+
                 st.write(
                     f"Median future runs: "
                     f"**{future_result['median']:.2f}**"
                 )
+
 
             else:
 
@@ -608,11 +952,11 @@ if analyze:
                     "future-run data नहीं मिला।"
                 )
 
+
         else:
 
             st.info(
-                "Target / Session number current ball से "
-                "आगे होना चाहिए।"
+                "Future Ball current ball से आगे होना चाहिए."
             )
 
 
@@ -626,10 +970,12 @@ if analyze:
         "🔎 Transparency"
     )
 
+
     st.write(
         "Percentage historical match outcomes से calculate "
         "की जाती है। कोई artificial percentage नहीं बनाई जाती।"
     )
+
 
     st.write(
         "Historical sample कम होने पर system percentage "
