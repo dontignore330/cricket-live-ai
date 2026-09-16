@@ -18,16 +18,15 @@ def download(league):
 
     path = f"data/{league.lower()}_json.zip"
 
-    if not os.path.exists(path):
-        print("Downloading", league)
+    url = os.getenv(
+        f"CRICSHEET_{league}_URL",
+        URLS[league]
+    )
 
-        url = os.getenv(
-            f"CRICSHEET_{league}_URL",
-            URLS[league]
-        )
+    print("Downloading", league)
+    print("Download URL:", url)
 
-        print("Download URL:", url)
-
+    try:
         request = urllib.request.Request(
             url,
             headers={
@@ -37,13 +36,49 @@ def download(league):
 
         with urllib.request.urlopen(
             request,
-            timeout=120
+            timeout=180
         ) as response:
 
-            with open(path, "wb") as file:
-                file.write(response.read())
+            data = response.read()
 
-    return path
+        print(
+            "Downloaded bytes:",
+            len(data)
+        )
+
+        # Check whether downloaded data is really a ZIP.
+        if not data.startswith(b"PK"):
+            print(
+                "ERROR: Downloaded file is NOT a ZIP file."
+            )
+
+            print(
+                "First bytes:",
+                data[:100]
+            )
+
+            raise RuntimeError(
+                f"{league} download did not return a valid ZIP file."
+            )
+
+        with open(path, "wb") as file:
+            file.write(data)
+
+        print(
+            league,
+            "ZIP downloaded successfully."
+        )
+
+        return path
+
+    except Exception as error:
+
+        if os.path.exists(path):
+            os.remove(path)
+
+        raise RuntimeError(
+            f"Could not download {league}: {error}"
+        )
 
 
 def build():
