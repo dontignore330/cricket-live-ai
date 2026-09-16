@@ -2,24 +2,34 @@ import sqlite3
 import math
 import os
 import hmac
+import json
+import tempfile
+import urllib.request
+import zipfile
 from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-DB_PATH = Path("cricket_history.db")
+BASE_DIR = Path(".")
+DB_PATHS = {
+    "IPL": BASE_DIR / "cricket_history.db",
+    "Men's Big Bash League": BASE_DIR / "bbl_history.db",
+    "Women's Big Bash League": BASE_DIR / "wbbl_history.db",
+}
+DATA_URLS = {
+    "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
+    "Women's Big Bash League": "https://cricsheet.org/downloads/wbb_json.zip",
+}
+
 st.set_page_config(page_title="VasuDev", page_icon="🏏", layout="wide")
 
-# ---------- private app lock ----------
-# Set VASUDEV_PASSWORD as a secret/environment variable on the hosting service.
 APP_PASSWORD = os.environ.get("VASUDEV_PASSWORD", "").strip()
 if not APP_PASSWORD:
     st.error("🔒 VasuDev is locked. Hosting setup is incomplete: set the VASUDEV_PASSWORD secret.")
     st.stop()
-
 if "vasudev_authenticated" not in st.session_state:
     st.session_state.vasudev_authenticated = False
-
 if not st.session_state.vasudev_authenticated:
     st.title("🔒 VasuDev Private Access")
     st.caption("Enter the private password to open the cricket analysis app.")
@@ -43,34 +53,120 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-@st.cache_resource
-def get_conn():
-    if not DB_PATH.exists():
+
+def _json_match_to_sqlite(db_path, league, zip_path):
+    tmp_db = db_path.with_suffix(db_path.suffix + ".tmp")
+    if tmp_db.exists():
+        tmp_db.unlink()
+    out = sqlite3.connect(str(tmp_db))
+    try:
+        out.execute("CREATE TABLE matches (match_id TEXT PRIMARY KEY, venue TEXT, winner TEXT, league TEXT)")
+        out.execute("""CREATE TABLE deliveries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id TEXT,
+            innings_no INTEGER,
+            batting_team TEXT,
+            bowling_team TEXT,
+            over_no INTEGER,
+            ball_no TEXT,
+            runs INTEGER,
+            wickets INTEGER,
+            league TEXT
+        )""")
+        match_rows, delivery_rows = [], []
+        with zipfile.ZipFile(zip_path) as z:
+            for name in (n for n in z.namelist() if n.endswith('.json')):
+                try:
+                    data = json.loads(z.read(name))
+                    info = data.get("info", {})
+                    teams = info.get("teams", [])
+                    if len(teams) < 2:
+                        continue
+                    outcome = info.get("outcome", {}) or {}
+                    winner = outcome.get("winner", "") or outcome.get("eliminator", "") or outcome.get("bowl_out", "")
+                    match_id = Path(name).stem
+                    venue = info.get("venue", "") or ""
+                    match_rows.append((match_id, venue, winner, league))
+                    for innings_no, innings in enumerate(data.get("innings", []), start=1):
+                        if innings.get("super_over"):
+                            continue
+                        batting_team = innings.get("team", "")
+                        bowling_team = next((t for t in teams if t != batting_team), "")
+                        for over in innings.get("overs", []):
+                            over_no = int(over.get("over", 0))
+                            for d in over.get("deliveries", []):
+                                actual = str(d.get("actual_delivery", f"{over_no}.0"))
+                                try:
+                                    _, ball_s = actual.split(".", 1)
+                                    ball_no = f"{over_no}.{int(ball_s)}"
+                                except Exception:
+                                    continue
+                                runs = int((d.get("runs") or {}).get("total", 0) or 0)
+                                wickets = len(d.get("wickets") or [])
+                                delivery_rows.append((match_id, innings_no, batting_team, bowling_team, over_no, ball_no, runs, wickets, league))
+                except Exception:
+                    continue
+        out.executemany("INSERT OR REPLACE INTO matches VALUES (?,?,?,?)", match_rows)
+        out.executemany("""INSERT INTO deliveries
+            (match_id, innings_no, batting_team, bowling_team, over_no, ball_no, runs, wickets, league)
+            VALUES (?,?,?,?,?,?,?,?,?)""", delivery_rows)
+        out.execute("CREATE INDEX idx_deliveries_league ON deliveries(league)")
+        out.execute("CREATE INDEX idx_deliveries_state ON deliveries(league, innings_no, ball_no)")
+        out.commit()
+    finally:
+        out.close()
+    tmp_db.replace(db_path)
+
+
+def ensure_bigbash_db(league):
+    db_path = DB_PATHS[league]
+    if db_path.exists():
+        return db_path, False
+    with tempfile.TemporaryDirectory() as td:
+        zip_path = Path(td) / "matches.zip"
+        try:
+            urllib.request.urlretrieve(DATA_URLS[league], zip_path)
+            _json_match_to_sqlite(db_path, league, zip_path)
+        except Exception as exc:
+            if db_path.exists():
+                db_path.unlink()
+            raise RuntimeError(f"Could not prepare {league} historical data: {exc}") from exc
+    return db_path, True
+
+
+def get_db_connection(db_path):
+    if not db_path.exists():
         return None
-    # Open the historical database in SQLite read-only mode. The deployed app
-    # therefore cannot insert, update, or delete historical data through this connection.
-    conn = sqlite3.connect(f"file:{DB_PATH.resolve()}?mode=ro", uri=True, check_same_thread=False)
+    conn = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
-conn = get_conn()
 st.title("🏏 VasuDev")
 st.caption("Cricket Historical & Situation Analyzer")
-st.write("Compare the live cricket situation with similar historical IPL situations.")
+league = st.selectbox("🏆 League", ["IPL", "Men's Big Bash League", "Women's Big Bash League"], index=0)
 
-if conn is None:
-    st.error("Historical database not found.")
-    st.info("The app is running, but the historical cricket database has not been connected yet.")
+try:
+    selected_db, built_now = ensure_bigbash_db(league) if league != "IPL" else (DB_PATHS["IPL"], False)
+except Exception as exc:
+    st.error(str(exc))
+    st.info("IPL remains available. Reload after the hosting service has internet access to prepare Big Bash data.")
     st.stop()
 
+conn = get_db_connection(selected_db)
+if conn is None:
+    st.error(f"Historical database for {league} not found.")
+    st.stop()
 try:
     match_count = conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
     delivery_count = conn.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0]
 except Exception as e:
     st.error(f"Database could not be read: {e}")
     st.stop()
-
-st.success(f"Historical database connected • {match_count:,} matches • {delivery_count:,} deliveries")
+st.success(f"{league} historical database connected • {match_count:,} matches • {delivery_count:,} deliveries")
+if built_now:
+    st.caption(f"{league} data prepared automatically and opened read-only for analysis.")
+else:
+    st.write(f"Compare the live cricket situation with similar historical {league} situations.")
 
 def get_values(sql, params=()):
     try:
@@ -80,21 +176,8 @@ def get_values(sql, params=()):
         return []
 
 def balls_from_over_ball(value):
-    # Historical database converter. Keep this permissive because the source
-    # data can contain delivery-number notation for illegal deliveries.
-    # The user-facing controls below are separately restricted to legal
-    # cricket positions (1-6 within an over).
-    value = float(value)
-    whole = int(math.floor(value + 1e-9))
-    tenth = int(round((value - whole) * 10))
-    if tenth > 5:
-        whole += tenth // 6
-        tenth = tenth % 6
-    return whole * 6 + tenth
-
-def strict_balls_from_over_ball(value):
-    # User-facing converter: cricket over.ball is not decimal math.
-    # Valid examples: 4.1 ... 4.6, then 5.1.
+    # Cricket over.ball is NOT decimal math: each over has exactly 6 legal balls.
+    # We accept whole-over states (e.g. 3.0) and legal balls 1-6 only.
     text = str(value).strip()
     try:
         whole_s, ball_s = text.split(".", 1)
@@ -136,17 +219,17 @@ def safe_round(x):
         return 0
 
 @st.cache_data(show_spinner=False)
-def load_history():
+def load_history(selected_league):
     q = """
     SELECT d.match_id, d.innings_no, d.batting_team, d.bowling_team,
            d.over_no, d.ball_no, d.runs, d.wickets, d.id,
            m.venue, m.winner
     FROM deliveries d
     JOIN matches m ON m.match_id=d.match_id
-    WHERE d.league='IPL'
+    WHERE d.league=?
     ORDER BY d.match_id, d.innings_no, d.id
     """
-    df = pd.read_sql_query(q, conn)
+    df = pd.read_sql_query(q, conn, params=(selected_league,))
     if df.empty:
         return df
     df["ball_pos"] = df["ball_no"].apply(balls_from_over_ball).astype(int)
@@ -160,27 +243,32 @@ def load_history():
     df["winner"] = df["winner"].fillna("").astype(str)
     return df
 
-history = load_history()
+history = load_history(league)
 
-teams = get_values("SELECT DISTINCT batting_team FROM deliveries WHERE league='IPL' ORDER BY batting_team")
-venues = get_values("SELECT DISTINCT venue FROM matches WHERE league='IPL' AND venue IS NOT NULL AND venue<>'' ORDER BY venue")
+teams = get_values("SELECT DISTINCT batting_team FROM deliveries WHERE league=? ORDER BY batting_team", (league,))
+venues = get_values("SELECT DISTINCT venue FROM matches WHERE league=? AND venue IS NOT NULL AND venue<>'' ORDER BY venue", (league,))
 if not teams:
-    teams = ["Chennai Super Kings","Delhi Capitals","Gujarat Titans","Kolkata Knight Riders","Lucknow Super Giants","Mumbai Indians","Punjab Kings","Rajasthan Royals","Royal Challengers Bengaluru","Sunrisers Hyderabad"]
+    st.error(f"No teams were found for {league}.")
+    st.stop()
 if not venues:
-    venues = ["Rajiv Gandhi International Stadium, Uppal, Hyderabad"]
+    venues = ["Unknown Ground"]
+
+
+
 
 st.subheader("🏏 Current Match")
 c1,c2,c3 = st.columns(3)
 with c1:
-    default_bat = "Sunrisers Hyderabad" if "Sunrisers Hyderabad" in teams else teams[0]
+    preferred_bat = {"IPL": "Sunrisers Hyderabad", "Men's Big Bash League": "Melbourne Stars", "Women's Big Bash League": "Sydney Sixers"}.get(league)
+    default_bat = preferred_bat if preferred_bat in teams else teams[0]
     batting = st.selectbox("Batting Team", teams, index=teams.index(default_bat))
 with c2:
     bowling_options = [x for x in teams if x != batting]
-    default_bowl = "Rajasthan Royals" if "Rajasthan Royals" in bowling_options else bowling_options[0]
+    preferred_bowl = {"IPL": "Rajasthan Royals", "Men's Big Bash League": "Sydney Sixers", "Women's Big Bash League": "Sydney Thunder"}.get(league)
+    default_bowl = preferred_bowl if preferred_bowl in bowling_options else bowling_options[0]
     bowling = st.selectbox("Bowling Team", bowling_options, index=bowling_options.index(default_bowl))
 with c3:
-    default_venue = "Rajiv Gandhi International Stadium, Uppal, Hyderabad" if "Rajiv Gandhi International Stadium, Uppal, Hyderabad" in venues else venues[0]
-    venue = st.selectbox("Ground", venues, index=venues.index(default_venue))
+    venue = st.selectbox("Ground", venues, index=0)
 
 c4,c5,c6,c7 = st.columns(4)
 with c4:
@@ -202,8 +290,8 @@ with c9:
 with c10:
     match_format = st.selectbox("Match Format", ["T20"])
 
-current_ball = strict_balls_from_over_ball(current_over)
-target_ball = strict_balls_from_over_ball(future_over)
+current_ball = balls_from_over_ball(current_over)
+target_ball = balls_from_over_ball(future_over)
 innings_no = 1 if innings_label == "1st Innings" else 2
 remaining = max(0, target_ball-current_ball)
 
@@ -237,7 +325,7 @@ def similarity_candidates(batting, bowling, venue, innings_no, current_ball, cur
         if not x.empty:
             selected = x.copy()
             if score_tol == 999:
-                used = "broad IPL similarity"
+                used = "broad selected-league similarity"
             else:
                 used = f"similar score ±{score_tol}, wickets ±{wk_tol}"
             if len(selected) >= 40 or score_tol >= 12:
@@ -361,7 +449,7 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
             m4.metric("Avg Future Runs",safe_round(avg_future))
             st.write(f"**YES:** {yes_pct:.1f}%  •  **NO:** {no_pct:.1f}%")
             st.write(f"Expected score at {over_ball_from_balls(target_ball)}: **{safe_round(avg_score)} runs**  •  Historical 10–90% range: **{safe_round(q10)}–{safe_round(q90)}**")
-            st.caption(f"Similarity engine: {method}. Ground, team, score, wickets and ball position are weighted; broader IPL data is used when exact situations are sparse.")
+            st.caption(f"Similarity engine: {method}. Ground, team, score, wickets and ball position are weighted; broader selected-league data is used when exact situations are sparse.")
             if len(cand)<30:
                 st.warning("Small historical sample: treat this result as low-data historical evidence.")
             elif len(cand)<100:
@@ -372,5 +460,5 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
         st.info("No exact match was required, but the database could not find a usable historical continuation for this future point. Try a later future point or another IPL situation.")
 
     st.markdown("### 🧩 How VasuDev handles rare situations")
-    st.write("The system does not depend on one exact historical match. It first uses close score/wicket/ball situations and gives extra weight to the selected ground and teams. If the exact combination is rare, it automatically broadens to similar IPL situations instead of simply showing Data Not Found.")
+    st.write("The system does not depend on one exact historical match from the selected league. It first uses close score/wicket/ball situations and gives extra weight to the selected ground and teams. If the exact combination is rare, it automatically broadens to similar IPL situations instead of simply showing Data Not Found.")
     st.caption("Player-level adjustment is reserved for the next data layer because the current cricket_history.db does not contain the current playing XI/player-at-ball fields. The present engine therefore does not invent player information.")
