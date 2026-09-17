@@ -50,9 +50,9 @@ st.markdown("""
 .result_yes { background:#06351f; padding:22px; border-radius:16px; border:2px solid #20c77a; text-align:center; }
 .result_no { background:#3d1010; padding:22px; border-radius:16px; border:2px solid #ef5350; text-align:center; }
 .result_win { background:#06351f; padding:22px; border-radius:16px; border:2px solid #20c77a; text-align:center; }
-.result_warning {
-        border: 2px solid #d6b656;
-        background: #fff8d6;
+.result_avg {
+        border: 2px solid #3b82f6;
+        background: #0b1f3a;
         padding: 16px;
         border-radius: 12px;
         margin: 8px 0 14px 0;
@@ -741,7 +741,7 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
         c3, c4 = st.columns(2)
         with c3:
             st.markdown(
-                f'<div class="result_warning"><h3>📈 AVG RUNS IN REMAINING BALLS</h3>'
+                f'<div class="result_avg"><h3>📈 AVG RUNS IN REMAINING BALLS</h3>'
                 f'<h1>+{safe_round(extra["avg_added"])} runs</h1>'
                 f'<p>Current <b>{current_runs}</b> → historical average future score <b>{safe_round(extra["projected_score"])}</b></p>'
                 f'<p class="small">{target_ball-current_ball} legal balls • {extra["cases"]:,} similar historical innings</p></div>',
@@ -755,20 +755,20 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
                 direction = "increase" if abs(tr["up_change"]) >= abs(tr["down_change"]) else "decrease"
                 if direction == "increase":
                     change_ball = over_ball_from_balls(tr["up_ball"])
-                    change_value = tr["up_change"]
-                    change_word = "increase"
+                    change_value = safe_round(abs(tr["up_change"]))
+                    change_word = "increased"
+                    sign = "+"
                 else:
                     change_ball = over_ball_from_balls(tr["down_ball"])
-                    change_value = abs(tr["down_change"])
-                    change_word = "decrease"
+                    change_value = safe_round(abs(tr["down_change"]))
+                    change_word = "decreased"
+                    sign = "-"
                 trend_text = (
-                    f'<p><b>Biggest average scoring {change_word}:</b> after <b>{change_ball}</b> '
-                    f'({change_value:.1f} runs/6 balls)</p>'
-                    f'<p><b>Highest recent average:</b> {tr["peak_rate"]:.1f} runs/6 balls at <b>{over_ball_from_balls(tr["peak_ball"])}</b></p>'
-                    f'<p><b>Lowest recent average:</b> {tr["low_rate"]:.1f} runs/6 balls at <b>{over_ball_from_balls(tr["low_ball"])}</b></p>'
+                    f'<p><b>Biggest scoring change:</b> after <b>{change_ball}</b></p>'
+                    f'<h2>{change_word.title()} by {sign}{change_value} runs / 6 balls</h2>'
                 )
             st.markdown(
-                f'<div class="result_warning"><h3>🔄 AVG SCORING CHANGE</h3>{trend_text}'
+                f'<div class="result_avg"><h3>🔄 AVG SCORING CHANGE</h3>{trend_text}'
                 f'<p class="small">Checked at every legal ball from {over_ball_from_balls(current_ball+1)} to {over_ball_from_balls(target_ball)}.</p></div>',
                 unsafe_allow_html=True,
             )
