@@ -628,3 +628,189 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
             st.write(f"WIN: **{win_pct:.1f}%** • LOSS: **{loss_pct:.1f}%** • Other/Tie: **{other_pct:.1f}%**")
         st.write("VasuDev does not manually increase a probability to make it look better. Advanced validation/backtesting is kept separate from the live result.")
 
+        # ---------- historical checkpoint pattern scanner ----------
+        # This is an observational view of past situations. It does not alter
+        # the existing live result or recommend a betting entry.
+        def historical_checkpoint_pattern(
+            batting, bowling, venue, innings_no, current_ball,
+            current_runs, wickets, target_ball, target_runs
+        ):
+            if history.empty or target_ball <= current_ball:
+                return pd.DataFrame()
+
+            # Checkpoints from the beginning through the selected current point.
+            # Include every legal ball plus completed-over checkpoints.
+            checkpoints = [0]
+            checkpoints += list(range(1, current_ball + 1))
+            checkpoints = sorted(set(x for x in checkpoints if x < target_ball))
+
+            grouped = history.groupby(["match_id", "innings_no"], sort=False)
+            rows = []
+
+            for cp in checkpoints:
+                # Find historical states around this checkpoint.
+                cur = history[
+                    (history.innings_no == innings_no) &
+                    (history.ball_pos.between(max(1, cp-1), cp+1))
+                ].copy()
+                if cp == 0:
+                    # There is no delivery at 0.0; use the first available state.
+                    cur = history[
+                        (history.innings_no == innings_no) &
+                        (history.ball_pos <= 1)
+                    ].copy()
+                if cur.empty:
+                    continue
+
+                # Reconstruct the score/wicket state implied by the current
+                # situation at this checkpoint. We use the observed run rate
+                # from the current state only to define a comparable checkpoint
+                # band, not to manufacture an outcome.
+                if cp == current_ball:
+                    score_center = current_runs
+                    wk_center = wickets
+                else:
+                    # Scale the current score back/up by the ball fraction.
+                    # Use a broad band so the result remains historical.
+                    score_center = current_runs * (cp / max(current_ball, 1))
+                    wk_center = wickets * (cp / max(current_ball, 1))
+
+                # Progressive score/wicket matching.
+                selected = pd.DataFrame()
+                for score_tol, wk_tol in [(3,0), (6,1), (10,2), (999,10)]:
+                    x = cur[(cur.cum_runs-score_center).abs() <= score_tol]
+                    x = x[(x.cum_wk-wk_center).abs() <= wk_tol]
+                    if not x.empty:
+                        selected = x.copy()
+                        if len(selected) >= 25 or score_tol >= 10:
+                            break
+                if selected.empty:
+                    continue
+
+                selected["team_score"] = (
+                    (selected.batting_team == batting).astype(float) * 1.0 +
+                    (selected.bowling_team == bowling).astype(float) * 0.8
+                )
+                selected["ground_score"] = (selected.venue == venue).astype(float)
+                selected["ball_score"] = np.exp(-((selected.ball_pos-cp).abs())/2.5)
+                selected["score_score"] = np.exp(-((selected.cum_runs-score_center).abs())/7.0)
+                selected["wk_score"] = np.exp(-((selected.cum_wk-wk_center).abs())/1.2)
+                selected["similarity"] = (
+                    0.28*selected.score_score +
+                    0.18*selected.wk_score +
+                    0.18*selected.ball_score +
+                    0.18*selected.ground_score +
+                    0.18*(selected.team_score/1.8)
+                )
+                selected["weight"] = selected.similarity.clip(lower=0.05)
+
+                future_rows = []
+                for (mid, inn), g in selected.groupby(["match_id", "innings_no"], sort=False):
+                    try:
+                        full = grouped.get_group((mid, inn))
+                    except KeyError:
+                        continue
+
+                    # The historical state must be before the chosen future point.
+                    before = full[full.ball_pos <= target_ball]
+                    if before.empty:
+                        continue
+
+                    # Use the closest checkpoint state for the starting score.
+                    idx = (g.ball_pos-cp).abs().idxmin()
+                    state_row = g.loc[idx]
+                    future_state = before.iloc[-1]
+
+                    # Avoid counting a historical state that occurs after the
+                    # checkpoint as the starting state.
+                    if int(state_row.ball_pos) > target_ball:
+                        continue
+
+                    future_score = float(future_state.cum_runs)
+                    future_rows.append({
+                        "match_id": mid,
+                        "innings_no": inn,
+                        "future_score": future_score,
+                        "start_score": float(state_row.cum_runs),
+                        "weight": float(state_row.weight),
+                        "winner": str(future_state.winner),
+                        "batting_team": str(state_row.batting_team),
+                    })
+
+                if not future_rows:
+                    continue
+
+                fr = pd.DataFrame(future_rows)
+                fr["hit"] = (fr.future_score >= target_runs).astype(float)
+                yes = weighted_pct(fr.hit.to_numpy(), fr.weight.to_numpy())
+                no = 100 - yes
+
+                valid = fr[fr.winner.str.strip() != ""]
+                if not valid.empty and valid.weight.sum() > 0:
+                    valid["win_flag"] = (
+                        valid.winner == valid.batting_team
+                    ).astype(float)
+                    win_pct = weighted_pct(
+                        valid.win_flag.to_numpy(), valid.weight.to_numpy()
+                    )
+                    loss_pct = 100 - win_pct
+                else:
+                    win_pct = np.nan
+                    loss_pct = np.nan
+
+                rows.append({
+                    "checkpoint": over_ball_from_balls(cp),
+                    "checkpoint_ball": cp,
+                    "samples": len(fr),
+                    "session_yes": yes,
+                    "session_no": no,
+                    "win_pct": win_pct,
+                    "loss_pct": loss_pct,
+                    "expected_score": np.average(
+                        fr.future_score, weights=fr.weight
+                    ),
+                })
+
+            return pd.DataFrame(rows)
+
+        st.markdown("### 🔎 Historical Pattern Analysis")
+        st.caption(
+            "Past IPL situations at different checkpoints are shown for the same "
+            "future point and target. This is historical frequency, not a betting "
+            "entry signal or a guarantee."
+        )
+
+        pattern = historical_checkpoint_pattern(
+            batting, bowling, venue, innings_no, current_ball,
+            current_runs, wickets, target_ball, target_runs
+        )
+
+        if pattern.empty:
+            st.info("Not enough historical checkpoint data for this situation.")
+        else:
+            display = pattern.copy()
+            display["Session YES"] = display["session_yes"].map(lambda x: f"{x:.1f}%")
+            display["Session NO"] = display["session_no"].map(lambda x: f"{x:.1f}%")
+            display["WIN"] = display["win_pct"].map(
+                lambda x: "—" if pd.isna(x) else f"{x:.1f}%"
+            )
+            display["LOSS"] = display["loss_pct"].map(
+                lambda x: "—" if pd.isna(x) else f"{x:.1f}%"
+            )
+            display["Expected"] = display["expected_score"].map(safe_round)
+
+            display = display[
+                ["checkpoint", "samples", "Session YES", "Session NO",
+                 "WIN", "LOSS", "Expected"]
+            ].rename(columns={
+                "checkpoint": "Checkpoint",
+                "samples": "Similar Cases"
+            })
+
+            st.dataframe(display, use_container_width=True, hide_index=True)
+            st.caption(
+                f"Each row asks the same historical question: did similar situations "
+                f"reach {target_runs} by {over_ball_from_balls(target_ball)}? "
+                "The checkpoint changes; the selected future point and target stay fixed."
+            )
+
