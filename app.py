@@ -227,8 +227,10 @@ def safe_round(x):
     except Exception:
         return 0
 
-@st.cache_data(show_spinner=False)
-def load_history(selected_league):
+@st.cache_data(show_spinner=False, ttl=3600)
+def load_history(selected_league, db_path_str):
+    # Keep the large historical dataframe out of the initial page load.
+    # Streamlit caches this per league/database, so Analyze reuses it.
     q = """
     SELECT d.match_id, d.innings_no, d.batting_team, d.bowling_team,
            d.over_no, d.ball_no, d.runs, d.wickets, d.id,
@@ -238,7 +240,11 @@ def load_history(selected_league):
     WHERE d.league=?
     ORDER BY d.match_id, d.innings_no, d.id
     """
-    df = pd.read_sql_query(q, conn, params=(selected_league,))
+    local_conn = sqlite3.connect(f"file:{Path(db_path_str).resolve()}?mode=ro", uri=True)
+    try:
+        df = pd.read_sql_query(q, local_conn, params=(selected_league,))
+    finally:
+        local_conn.close()
     if df.empty:
         return df
     # Historical files can contain illegal-delivery labels such as 4.7 or 4.10.
@@ -270,10 +276,29 @@ def load_history(selected_league):
     df["winner"] = df["winner"].fillna("").astype(str)
     return df
 
-history = load_history(league)
+# IMPORTANT: Do not load the full ball-by-ball dataframe here.
+# That was the main reason password unlock/page opening felt slow.
+# The large history is loaded lazily only when ANALYZE is pressed.
+history = pd.DataFrame()
 
-teams = get_values("SELECT DISTINCT batting_team FROM deliveries WHERE league=? ORDER BY batting_team", (league,))
-venues = get_values("SELECT DISTINCT venue FROM matches WHERE league=? AND venue IS NOT NULL AND venue<>'' ORDER BY venue", (league,))
+@st.cache_data(show_spinner=False, ttl=3600)
+def load_metadata(db_path_str, selected_league):
+    local_conn = sqlite3.connect(f"file:{Path(db_path_str).resolve()}?mode=ro", uri=True)
+    try:
+        teams_df = pd.read_sql_query(
+            "SELECT DISTINCT batting_team FROM deliveries WHERE league=? ORDER BY batting_team",
+            local_conn, params=(selected_league,)
+        )
+        venues_df = pd.read_sql_query(
+            "SELECT DISTINCT venue FROM matches WHERE league=? AND venue IS NOT NULL AND venue<>'' ORDER BY venue",
+            local_conn, params=(selected_league,)
+        )
+        return (teams_df.iloc[:,0].dropna().astype(str).tolist(),
+                venues_df.iloc[:,0].dropna().astype(str).tolist())
+    finally:
+        local_conn.close()
+
+teams, venues = load_metadata(str(selected_db), league)
 if not teams:
     st.error(f"No teams were found for {league}.")
     st.stop()
@@ -373,27 +398,32 @@ def similarity_candidates(batting, bowling, venue, innings_no, current_ball, cur
     return selected, used
 
 def add_future_scores(candidates, target_ball):
+    """Attach the score at/before target_ball without scanning each candidate row.
+
+    The old version called groupby.get_group() once for every candidate. With a
+    large historical database that created hundreds/thousands of repeated scans.
+    This version builds one target snapshot per innings and merges it once.
+    """
     if candidates.empty:
         return candidates
-    future_rows=[]
-    # Candidate rows are only a few thousand at most; find first delivery at/after target in each innings.
-    grouped = history.groupby(["match_id","innings_no"], sort=False)
-    for idx,row in candidates.iterrows():
-        key=(row.match_id,row.innings_no)
-        try:
-            g=grouped.get_group(key)
-        except KeyError:
-            continue
-        f=g[g.ball_pos <= target_ball]
-        if f.empty:
-            continue
-        # Prefer the state exactly at target; if no legal delivery exists, use the last score at/before it.
-        fr=f.iloc[-1]
-        r=row.to_dict()
-        r["future_score"]=float(fr.cum_runs)
-        r["future_runs"]=float(fr.cum_runs-row.cum_runs)
-        future_rows.append(r)
-    return pd.DataFrame(future_rows)
+
+    target_rows = history[history.ball_pos <= target_ball]
+    if target_rows.empty:
+        return pd.DataFrame()
+
+    target_rows = (
+        target_rows.sort_values(["match_id", "innings_no", "ball_pos"])
+        .groupby(["match_id", "innings_no"], sort=False)
+        .tail(1)[["match_id", "innings_no", "cum_runs"]]
+        .rename(columns={"cum_runs": "future_score"})
+    )
+
+    out = candidates.merge(target_rows, on=["match_id", "innings_no"], how="inner")
+    if out.empty:
+        return out
+    out["future_score"] = out["future_score"].astype(float)
+    out["future_runs"] = out["future_score"] - out["cum_runs"]
+    return out
 
 def weighted_pct(values, weights):
     if len(values)==0 or weights.sum()<=0:
@@ -540,6 +570,9 @@ def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sampl
 with st.expander("🧪 VasuDev Historical Validation (advanced)", expanded=False):
     st.caption("Advanced validation runs only when requested. It uses held-out historical match states and never changes a result just to make the percentage look higher.")
     if st.button("▶ Run Historical Validation", use_container_width=True):
+        if history.empty:
+            with st.spinner("Loading historical cricket data..."):
+                history = load_history(league, str(selected_db))
         with st.spinner("Validating VasuDev on historical situations..."):
             bt = backtest_session_and_win(history, target_runs=target_runs, horizon_balls=remaining, sample_size=100, seed=42)
         if bt is None:
@@ -564,6 +597,15 @@ with st.expander("🧪 VasuDev Historical Validation (advanced)", expanded=False
                 st.write(f"WIN Brier score: **{np.mean((probs-actuals)**2):.4f}** (lower is better)")
 
 if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_ball<=current_ball)):
+    # Load the large historical dataframe only when the user actually analyzes.
+    # This keeps password unlock and normal page interaction fast.
+    if history.empty:
+        with st.spinner("Loading historical cricket data..."):
+            history = load_history(league, str(selected_db))
+    if history.empty:
+        st.error("Historical data could not be loaded for this league.")
+        st.stop()
+
     # Final user-facing output is intentionally compact. Detailed calculations
     # remain available in the optional Details expander.
     win_df=historical_win_similarity(batting,bowling,venue,innings_no,current_ball,current_runs,wickets)
