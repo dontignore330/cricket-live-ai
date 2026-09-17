@@ -637,98 +637,124 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
     # These are the only two additional historical result boxes. WINNING and
     # SESSION above are intentionally left unchanged.
     def historical_extra_results(candidates, current_ball, target_ball, current_runs):
+        """Fast historical average/trend calculation for only the selected window.
+
+        The expensive old version repeatedly scanned every innings for every ball.
+        This version builds the relevant historical future rows in one merge, so
+        the calculation stays limited to the selected current->future window.
+        """
         if candidates is None or candidates.empty or target_ball <= current_ball:
             return None
 
         base = candidates.copy()
         base["distance"] = (base.ball_pos - current_ball).abs()
         base = base.sort_values(["distance", "weight"], ascending=[True, False])
+        # One representative state per historical innings.
         base = base.drop_duplicates(["match_id", "innings_no"], keep="first")
         if base.empty:
             return None
 
-        grouped = history.groupby(["match_id", "innings_no"], sort=False)
-        records = []
-        for _, start in base.iterrows():
-            try:
-                full = grouped.get_group((start.match_id, start.innings_no)).sort_values("ball_pos")
-            except KeyError:
-                continue
+        starts = base[["match_id", "innings_no", "ball_pos", "cum_runs", "weight"]].copy()
+        starts = starts.rename(columns={
+            "ball_pos": "start_ball",
+            "cum_runs": "start_score",
+            "weight": "start_weight",
+        })
+        starts["case_id"] = np.arange(len(starts), dtype=np.int32)
 
-            start_ball = int(start.ball_pos)
-            start_score = float(start.cum_runs)
-            future = full[(full.ball_pos > start_ball) & (full.ball_pos <= target_ball)].copy()
-            if future.empty:
-                continue
-
-            # Per-ball historical run additions. The final row gives the total
-            # runs added between the matched current state and the selected future point.
-            future["ball_runs"] = future.cum_runs.diff().fillna(future.cum_runs - start_score)
-            future["ball_runs"] = future["ball_runs"].clip(lower=0)
-            records.append({
-                "match_id": start.match_id,
-                "innings_no": int(start.innings_no),
-                "start_ball": start_ball,
-                "start_score": start_score,
-                "weight": float(start.weight),
-                "future": future,
-            })
-
-        if not records:
+        # Only bring in historical deliveries from innings that actually matched.
+        future_pool = history[["match_id", "innings_no", "ball_pos", "cum_runs", "runs"]].copy()
+        future = starts.merge(future_pool, on=["match_id", "innings_no"], how="inner")
+        future = future[
+            (future.ball_pos > future.start_ball) &
+            (future.ball_pos <= target_ball)
+        ].copy()
+        if future.empty:
             return None
 
-        # Result 3: average total runs added in the remaining balls.
-        totals = np.asarray([
-            float(r["future"].iloc[-1].cum_runs) - r["start_score"] for r in records
-        ], dtype=float)
-        weights = np.asarray([r["weight"] for r in records], dtype=float)
-        avg_added = float(np.average(totals, weights=weights)) if weights.sum() else float(np.mean(totals))
+        # Total runs added from the matched current state to the selected future point.
+        end_scores = (
+            future.sort_values(["case_id", "ball_pos"])
+            .groupby("case_id", sort=False)
+            .tail(1)[["case_id", "cum_runs"]]
+            .rename(columns={"cum_runs": "future_score"})
+        )
+        case_table = starts.merge(end_scores, on="case_id", how="inner")
+        if case_table.empty:
+            return None
+
+        case_table["future_runs"] = case_table["future_score"] - case_table["start_score"]
+        totals = case_table["future_runs"].to_numpy(dtype=float)
+        weights = case_table["start_weight"].to_numpy(dtype=float)
+        avg_added = (
+            float(np.average(totals, weights=weights))
+            if weights.sum() > 0 else float(np.mean(totals))
+        )
         projected_score = float(current_runs + avg_added)
 
-        # Result 4: scoring-trend change, checked at every legal ball in the
-        # selected window. For each checkpoint, calculate the average runs scored
-        # in the most recent six legal balls across the similar historical innings.
+        # User-facing sample breakdown around the rounded average.
+        avg_threshold = safe_round(avg_added)
+        reached = int((case_table["future_runs"] >= avg_threshold).sum())
+        below = int((case_table["future_runs"] < avg_threshold).sum())
+        total_cases = int(len(case_table))
+        match_count = int(case_table[["match_id", "innings_no"]].drop_duplicates().shape[0])
+
+        # Scoring trend: check every legal ball in the selected window.
+        # For each checkpoint, average the most recent six legal-ball runs.
         trend_rows = []
+        future = future.sort_values(["case_id", "ball_pos"])
         for cp in range(current_ball + 1, target_ball + 1):
-            rates = []
-            for r in records:
-                f = r["future"]
-                last6 = f[f.ball_pos <= cp].tail(6)
-                if last6.empty:
-                    continue
-                rates.append(float(last6["ball_runs"].sum()))
-            if rates:
+            window = future[
+                (future.ball_pos <= cp) &
+                (future.ball_pos >= cp - 5)
+            ]
+            if window.empty:
+                continue
+            rates = window.groupby("case_id", sort=False)["runs"].sum()
+            if len(rates):
                 trend_rows.append({
                     "ball": cp,
-                    "avg_6ball_runs": float(np.mean(rates)),
+                    "avg_6ball_runs": float(rates.mean()),
                 })
 
         trend = pd.DataFrame(trend_rows)
         trend_summary = None
         if not trend.empty:
             trend["change"] = trend["avg_6ball_runs"].diff()
-            peak = trend.loc[trend["avg_6ball_runs"].idxmax()]
-            low = trend.loc[trend["avg_6ball_runs"].idxmin()]
             if len(trend) > 1:
                 biggest_up = trend.loc[trend["change"].idxmax()]
                 biggest_down = trend.loc[trend["change"].idxmin()]
             else:
                 biggest_up = biggest_down = trend.iloc[0]
+
+            if len(trend) > 1:
+                if abs(float(biggest_up["change"])) >= abs(float(biggest_down["change"])):
+                    direction = "increase"
+                    change_ball = int(biggest_up["ball"])
+                    change_value = float(biggest_up["change"])
+                else:
+                    direction = "decrease"
+                    change_ball = int(biggest_down["ball"])
+                    change_value = float(biggest_down["change"])
+            else:
+                direction = "increase" if float(biggest_up["change"]) >= 0 else "decrease"
+                change_ball = int(biggest_up["ball"])
+                change_value = float(biggest_up["change"]) if pd.notna(biggest_up["change"]) else 0.0
+
             trend_summary = {
-                "peak_ball": int(peak.ball),
-                "peak_rate": float(peak.avg_6ball_runs),
-                "low_ball": int(low.ball),
-                "low_rate": float(low.avg_6ball_runs),
-                "up_ball": int(biggest_up.ball),
-                "up_change": float(biggest_up.change) if pd.notna(biggest_up.change) else 0.0,
-                "down_ball": int(biggest_down.ball),
-                "down_change": float(biggest_down.change) if pd.notna(biggest_down.change) else 0.0,
+                "change_ball": change_ball,
+                "change_value": change_value,
+                "direction": direction,
             }
 
         return {
-            "cases": len(records),
+            "cases": total_cases,
+            "match_count": match_count,
             "avg_added": avg_added,
             "projected_score": projected_score,
+            "avg_threshold": avg_threshold,
+            "reached": reached,
+            "below": below,
             "trend": trend_summary,
         }
 
@@ -744,7 +770,9 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
                 f'<div class="result_avg"><h3>📈 AVG RUNS IN REMAINING BALLS</h3>'
                 f'<h1>+{safe_round(extra["avg_added"])} runs</h1>'
                 f'<p>Current <b>{current_runs}</b> → historical average future score <b>{safe_round(extra["projected_score"])}</b></p>'
-                f'<p class="small">{target_ball-current_ball} legal balls • {extra["cases"]:,} similar historical innings</p></div>',
+                f'<p><b>{extra["reached"]:,}</b> of <b>{extra["cases"]:,}</b> similar innings reached <b>{extra["avg_threshold"]}+ runs</b>; '
+                f'<b>{extra["below"]:,}</b> stayed below.</p>'
+                f'<p class="small">{target_ball-current_ball} legal balls • {extra["cases"]:,} similar innings from {extra["match_count"]:,} matches</p></div>',
                 unsafe_allow_html=True,
             )
         with c4:
