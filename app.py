@@ -588,12 +588,16 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
     cand,method=similarity_candidates(batting,bowling,venue,innings_no,current_ball,current_runs,wickets,target_ball)
     session_yes=session_no=0.0
     session_samples=0
+    session_target_yes=0
+    session_target_no=0
     expected_score=None
     range_low=range_high=None
     if not cand.empty:
         cand=add_future_scores(cand,target_ball)
     if not cand.empty:
         cand["hit"]=(cand.future_score>=target_runs).astype(float)
+        session_target_yes=int(cand["hit"].sum())
+        session_target_no=int(len(cand)-session_target_yes)
         session_yes=weighted_pct(cand.hit.to_numpy(),cand.weight.to_numpy())
         session_no=100-session_yes
         session_samples=len(cand)
@@ -804,6 +808,30 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
             st.write(f"YES: **{session_yes:.1f}%** • NO: **{session_no:.1f}%**")
             st.write(f"Expected score at future point: **{safe_round(expected_score)}** • Historical 10–90% range: **{safe_round(range_low)}–{safe_round(range_high)}**")
             st.caption(f"Similarity: {method}. Team, ground, score, wickets and ball position are weighted; broader {league} data is used when exact situations are sparse.")
+
+            st.markdown("### 🔎 WHY THIS RESULT?")
+            st.write(
+                f"• **{session_samples:,}** similar historical situations were used from **{extra['match_count']:,} matches**."
+            )
+            st.write(
+                f"• The historical calculation gave **{session_yes:.1f}% YES** because the selected target was reached in **{session_target_yes:,} of {session_samples:,}** cases; **{session_target_no:,}** did not reach it."
+            )
+            st.write(
+                f"• The result is **weighted**, so closer matches to the current team, ground, score, wickets and ball position have more influence than weaker matches."
+            )
+            st.write(
+                f"• Historical average added **+{safe_round(extra['avg_added'])} runs**, giving a projected score of **{safe_round(extra['projected_score'])}** by {over_ball_from_balls(target_ball)}."
+            )
+            if extra.get("trend") is not None:
+                tr = extra["trend"]
+                direction_word = "increased" if tr["direction"] == "increase" else "decreased"
+                st.write(
+                    f"• Scoring trend {direction_word} by about **{safe_round(abs(tr['change_value']))} runs per 6 balls** around {over_ball_from_balls(tr['change_ball'])}."
+                )
+
         if win_samples:
             st.write(f"WIN: **{win_pct:.1f}%** • LOSS: **{loss_pct:.1f}%** • Other/Tie: **{other_pct:.1f}%**")
+            st.write(
+                f"• WIN/LOSS is calculated separately from historical match outcomes using **{win_samples:,}** similar match states; the percentage is not manually increased."
+            )
         st.write("VasuDev does not manually increase a probability to make it look better. Advanced validation/backtesting is kept separate from the live result.")
