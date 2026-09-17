@@ -449,7 +449,7 @@ def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sampl
         future = own[own.ball_pos <= target_ball_bt]
         if future.empty:
             continue
-        actual_future_runs = float(future.iloc[-1].cum_runs - state.cum_runs)
+        actual_future_score = float(future.iloc[-1].cum_runs)
         # Use the same target for every test state. This avoids the invalid
         # practice of defining the target from the already-known future outcome.
         target_bt = float(target_runs)
@@ -495,10 +495,10 @@ def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sampl
             future_rows.append((mid, inn, actual, float(first.weight)))
         if not future_rows:
             continue
-        fr=pd.DataFrame(future_rows, columns=["match_id","innings_no","future_runs","weight"])
-        session_prob=100*float(np.average((fr.future_runs >= target_bt).astype(float), weights=fr.weight))
+        fr=pd.DataFrame(future_rows, columns=["match_id","innings_no","future_score","weight"])
+        session_prob=100*float(np.average((fr.future_score >= target_bt).astype(float), weights=fr.weight))
         # Actual event in the held-out match.
-        actual_session = 1.0 if (float(future.iloc[-1].cum_runs) >= target_bt) else 0.0
+        actual_session = 1.0 if actual_future_score >= target_bt else 0.0
         session_hits.append(1.0 if (session_prob >= 50) == bool(actual_session) else 0.0)
         session_probs.append(session_prob)
         session_actuals.append(actual_session)
@@ -528,125 +528,103 @@ def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sampl
         "win_actuals": win_actuals,
     }
 
-with st.expander("🧪 VasuDev Historical Backtest", expanded=False):
-    st.caption("This test uses past match states and excludes the same match from its comparison pool. It tests the current target over the current ball horizon; it is a directional backtest, not a guarantee of future accuracy.")
-    if st.button("▶ Run Backtest", use_container_width=True):
-        with st.spinner("Testing historical situations..."):
+with st.expander("🧪 VasuDev Historical Validation (advanced)", expanded=False):
+    st.caption("Advanced validation runs only when requested. It uses held-out historical match states and never changes a result just to make the percentage look higher.")
+    if st.button("▶ Run Historical Validation", use_container_width=True):
+        with st.spinner("Validating VasuDev on historical situations..."):
             bt = backtest_session_and_win(history, target_runs=target_runs, horizon_balls=remaining, sample_size=100, seed=42)
         if bt is None:
-            st.warning("Not enough historical data for a backtest.")
+            st.warning("Not enough historical data for validation.")
         else:
             a,b,c,d=st.columns(4)
             if bt["session_directional_accuracy"] is not None:
-                a.metric("Session direction accuracy", f"{bt['session_directional_accuracy']:.1f}%")
+                a.metric("Session accuracy", f"{bt['session_directional_accuracy']:.1f}%")
             if bt["win_directional_accuracy"] is not None:
-                b.metric("WIN direction accuracy", f"{bt['win_directional_accuracy']:.1f}%")
+                b.metric("WIN accuracy", f"{bt['win_directional_accuracy']:.1f}%")
             c.metric("Test states", bt["states"])
             if bt["session_avg_probability"] is not None:
                 d.metric("Avg session probability", f"{bt['session_avg_probability']:.1f}%")
-            if bt["win_avg_probability"] is not None:
-                st.write(f"Average historical WIN probability across tested states: **{bt['win_avg_probability']:.1f}%**")
-            st.info("Backtest accuracy is measured only on held-out historical states. It is a measurement of past performance, not a guarantee of future accuracy.")
-
-            # Probability calibration: a 70% prediction should historically occur
-            # close to 70% of the time. This checks the quality of the probabilities,
-            # not just whether the final YES/NO direction was correct.
+            st.info("These are measured results on held-out historical states. They are not a guarantee of future accuracy and are not used to manufacture a preferred percentage.")
             if bt.get("session_probs") and bt.get("session_actuals"):
-                probs = np.asarray(bt["session_probs"], dtype=float) / 100.0
-                actuals = np.asarray(bt["session_actuals"], dtype=float)
-                brier = float(np.mean((probs - actuals) ** 2))
-                st.markdown("#### 🎯 Session Probability Calibration")
-                st.write(f"Brier score: **{brier:.4f}** (0 is perfect)")
-                bins=[]
-                for lo,hi in [(0,20),(20,40),(40,60),(60,80),(80,100)]:
-                    mask=(probs*100 >= lo) & (probs*100 < hi if hi < 100 else probs*100 <= hi)
-                    if mask.any():
-                        bins.append({"Predicted range":f"{lo}–{hi}%","Tests":int(mask.sum()),"Average predicted %":round(float(probs[mask].mean()*100),1),"Actual YES %":round(float(actuals[mask].mean()*100),1)})
-                if bins:
-                    st.dataframe(pd.DataFrame(bins), use_container_width=True, hide_index=True)
+                probs=np.asarray(bt["session_probs"],dtype=float)/100.0
+                actuals=np.asarray(bt["session_actuals"],dtype=float)
+                st.write(f"Session Brier score: **{np.mean((probs-actuals)**2):.4f}** (lower is better)")
             if bt.get("win_probs") and bt.get("win_actuals"):
-                probs = np.asarray(bt["win_probs"], dtype=float) / 100.0
-                actuals = np.asarray(bt["win_actuals"], dtype=float)
-                brier = float(np.mean((probs - actuals) ** 2))
-                st.markdown("#### 🏆 WIN Probability Calibration")
-                st.write(f"Brier score: **{brier:.4f}** (0 is perfect)")
-                bins=[]
-                for lo,hi in [(0,20),(20,40),(40,60),(60,80),(80,100)]:
-                    mask=(probs*100 >= lo) & (probs*100 < hi if hi < 100 else probs*100 <= hi)
-                    if mask.any():
-                        bins.append({"Predicted range":f"{lo}–{hi}%","Tests":int(mask.sum()),"Average predicted %":round(float(probs[mask].mean()*100),1),"Actual WIN %":round(float(actuals[mask].mean()*100),1)})
-                if bins:
-                    st.dataframe(pd.DataFrame(bins), use_container_width=True, hide_index=True)
+                probs=np.asarray(bt["win_probs"],dtype=float)/100.0
+                actuals=np.asarray(bt["win_actuals"],dtype=float)
+                st.write(f"WIN Brier score: **{np.mean((probs-actuals)**2):.4f}** (lower is better)")
 
 if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_ball<=current_ball)):
-    st.subheader("🧠 VasuDev Analysis")
-    st.markdown(f"**{batting}** vs **{bowling}**  •  **{venue}**  •  **{innings_label}**  •  **{match_format}**")
-    st.write(f"Current: **{current_runs}/{wickets} at {over_ball_from_balls(current_ball)}** → Future: **{over_ball_from_balls(target_ball)}** → Target: **{target_runs}**")
-
-    # Existing eventual-match-result style, now similarity based.
+    # Final user-facing output is intentionally compact. Detailed calculations
+    # remain available in the optional Details expander.
     win_df=historical_win_similarity(batting,bowling,venue,innings_no,current_ball,current_runs,wickets)
-    st.markdown("### 🏆 Historical Team Winning / Loss Result")
+    win_pct=loss_pct=other_pct=0.0
+    win_samples=0
     if win_df is not None and len(win_df):
-        valid_result = win_df[win_df.winner.str.strip() != ""].copy()
+        valid_result=win_df[win_df.winner.str.strip() != ""].copy()
         if len(valid_result):
-            won = (valid_result.winner == valid_result.batting_team)
-            lost = (valid_result.winner == valid_result.bowling_team)
-            other = ~(won | lost)
-            win_weight = valid_result.loc[won, "weight"].sum()
-            loss_weight = valid_result.loc[lost, "weight"].sum()
-            other_weight = valid_result.loc[other, "weight"].sum()
-            total_weight = win_weight + loss_weight + other_weight
-            win_pct = 100 * win_weight / total_weight if total_weight else 0.0
-            loss_pct = 100 * loss_weight / total_weight if total_weight else 0.0
-            other_pct = 100 * other_weight / total_weight if total_weight else 0.0
-            a,b,c,d=st.columns(4)
-            a.metric("Batting Team WIN",f"{win_pct:.1f}%")
-            b.metric("Batting Team LOSS",f"{loss_pct:.1f}%")
-            c.metric("Other / Tie",f"{other_pct:.1f}%")
-            d.metric("Similar States",len(valid_result))
-            st.write(f"**{batting}:** {win_pct:.1f}% historical win frequency  •  **Loss:** {loss_pct:.1f}%  •  **Other:** {other_pct:.1f}%")
-            st.caption("This is based on historical match states similar to the current score, wickets, ball position, teams and ground. It is historical frequency, not a guarantee.")
-        else:
-            st.info("Similar states were found, but they do not contain a usable final match result.")
-    else:
-        st.info("No usable historical match-result sample was found.")
+            won=(valid_result.winner==valid_result.batting_team)
+            lost=(valid_result.winner==valid_result.bowling_team)
+            other=~(won|lost)
+            ww=float(valid_result.loc[won,"weight"].sum())
+            lw=float(valid_result.loc[lost,"weight"].sum())
+            ow=float(valid_result.loc[other,"weight"].sum())
+            total=ww+lw+ow
+            if total>0:
+                win_pct=100*ww/total
+                loss_pct=100*lw/total
+                other_pct=100*ow/total
+            win_samples=len(valid_result)
 
-    # Target analysis.
-    st.markdown("### 🎯 Historical Target Analysis")
-    cand, method=similarity_candidates(batting,bowling,venue,innings_no,current_ball,current_runs,wickets,target_ball)
+    cand,method=similarity_candidates(batting,bowling,venue,innings_no,current_ball,current_runs,wickets,target_ball)
+    session_yes=session_no=0.0
+    session_samples=0
+    expected_score=None
+    range_low=range_high=None
     if not cand.empty:
         cand=add_future_scores(cand,target_ball)
-        if cand.empty:
-            st.info("Historical states were found, but not enough of them continued to the selected future point.")
-        else:
-            cand["hit"]=(cand.future_score>=target_runs).astype(float)
-            yes_pct=weighted_pct(cand.hit.to_numpy(),cand.weight.to_numpy())
-            no_pct=100-yes_pct
-            avg_future=np.average(cand.future_runs,weights=cand.weight)
-            avg_score=np.average(cand.future_score,weights=cand.weight)
-            q10=float(cand.future_score.quantile(.10)); q90=float(cand.future_score.quantile(.90))
-            box="result_yes" if yes_pct>=no_pct else "result_no"
-            label="YES" if yes_pct>=no_pct else "NO"
-            pct=max(yes_pct,no_pct)
-            st.write(f"**Question:** Similar historical situations — did the batting team reach **{target_runs} runs by {over_ball_from_balls(target_ball)}**?")
-            st.markdown(f'<div class="{box}"><h1>{label}</h1><h2>{pct:.1f}% historical frequency</h2><p>Target: <b>{target_runs}</b> by <b>{over_ball_from_balls(target_ball)}</b> • {remaining} balls remaining</p></div>',unsafe_allow_html=True)
-            m1,m2,m3,m4=st.columns(4)
-            m1.metric("Historical YES",int(round(cand.hit.sum())))
-            m2.metric("Historical NO",int(len(cand)-round(cand.hit.sum())))
-            m3.metric("Similar Samples",len(cand))
-            m4.metric("Avg Future Runs",safe_round(avg_future))
-            st.write(f"**YES:** {yes_pct:.1f}%  •  **NO:** {no_pct:.1f}%")
-            st.write(f"Expected score at {over_ball_from_balls(target_ball)}: **{safe_round(avg_score)} runs**  •  Historical 10–90% range: **{safe_round(q10)}–{safe_round(q90)}**")
-            st.caption(f"Similarity engine: {method}. Ground, team, score, wickets and ball position are weighted; broader selected-league data is used when exact situations are sparse.")
-            if len(cand)<30:
-                st.warning("Small historical sample: treat this result as low-data historical evidence.")
-            elif len(cand)<100:
-                st.info("Moderate historical sample: the result is based on similar situations, not exact duplicates.")
-            else:
-                st.success("Good historical sample size for this situation.")
-    else:
-        st.info("No exact match was required, but the database could not find a usable historical continuation for this future point. Try a later future point or another IPL situation.")
+    if not cand.empty:
+        cand["hit"]=(cand.future_score>=target_runs).astype(float)
+        session_yes=weighted_pct(cand.hit.to_numpy(),cand.weight.to_numpy())
+        session_no=100-session_yes
+        session_samples=len(cand)
+        expected_score=float(np.average(cand.future_score,weights=cand.weight))
+        range_low=float(cand.future_score.quantile(.10))
+        range_high=float(cand.future_score.quantile(.90))
 
-    st.markdown("### 🧩 How VasuDev handles rare situations")
-    st.write("The system does not depend on one exact historical match from the selected league. It first uses close score/wicket/ball situations and gives extra weight to the selected ground and teams. If the exact combination is rare, it automatically broadens to similar IPL situations instead of simply showing Data Not Found.")
-    st.caption("Player-level adjustment is reserved for the next data layer because the current cricket_history.db does not contain the current playing XI/player-at-ball fields. The present engine therefore does not invent player information.")
+    def reliability(n):
+        if n>=500: return "High"
+        if n>=100: return "Good"
+        if n>=30: return "Medium"
+        return "Limited"
+
+    st.subheader("🧠 VasuDev Result")
+    st.caption(f"{league} • {batting} vs {bowling} • {innings_label} • {venue}")
+
+    st.markdown("### 🏆 WINNING")
+    if win_samples:
+        st.markdown(f"<div class=\"card\"><h2>{batting} WIN — {win_pct:.1f}%</h2><h3>LOSS — {loss_pct:.1f}%</h3><p class=\"small\">Historical probability • {win_samples:,} similar match states • Reliability: {reliability(win_samples)}</p></div>",unsafe_allow_html=True)
+    else:
+        st.info("Not enough historical match-result data for this situation.")
+
+    st.markdown("### 🎯 SESSION")
+    if session_samples:
+        label="YES" if session_yes>=session_no else "NO"
+        pct=max(session_yes,session_no)
+        box="result_yes" if label=="YES" else "result_no"
+        st.markdown(f"<div class=\"{box}\"><h1>{label} — {pct:.1f}%</h1><p>Target <b>{target_runs}</b> by <b>{over_ball_from_balls(target_ball)}</b> • {remaining} balls remaining</p><p class=\"small\">Historical probability • {session_samples:,} similar situations • Reliability: {reliability(session_samples)}</p></div>",unsafe_allow_html=True)
+    else:
+        st.info("Not enough historical continuation data for this session.")
+
+    st.caption("Probabilities are calculated from historical data and validated methods. They are not guarantees; the final decision remains with the user.")
+
+    with st.expander("Details (optional)", expanded=False):
+        st.write(f"**Current:** {current_runs}/{wickets} at {over_ball_from_balls(current_ball)} → **Future:** {over_ball_from_balls(target_ball)} → **Target:** {target_runs}")
+        if session_samples:
+            st.write(f"YES: **{session_yes:.1f}%** • NO: **{session_no:.1f}%**")
+            st.write(f"Expected score at future point: **{safe_round(expected_score)}** • Historical 10–90% range: **{safe_round(range_low)}–{safe_round(range_high)}**")
+            st.caption(f"Similarity: {method}. Team, ground, score, wickets and ball position are weighted; broader {league} data is used when exact situations are sparse.")
+        if win_samples:
+            st.write(f"WIN: **{win_pct:.1f}%** • LOSS: **{loss_pct:.1f}%** • Other/Tie: **{other_pct:.1f}%**")
+        st.write("VasuDev does not manually increase a probability to make it look better. Advanced validation/backtesting is kept separate from the live result.")
+
