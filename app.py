@@ -633,182 +633,145 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
 
     st.caption("Probabilities are calculated from historical data and validated methods. They are not guarantees; the final decision remains with the user.")
 
-    # ---------- ball-by-ball historical movement map ----------
-    # Optional observational layer: keep all existing WIN/SESSION calculations
-    # untouched and show how similar historical innings actually moved from the
-    # current state through every legal T20 checkpoint up to 20.0 overs.
-    def historical_movement_map(candidates, current_ball, current_runs, target_runs):
-        if candidates is None or candidates.empty:
-            return pd.DataFrame(), pd.DataFrame()
+    # ---------- Historical average-run + scoring-trend results ----------
+    # These are the only two additional historical result boxes. WINNING and
+    # SESSION above are intentionally left unchanged.
+    def historical_extra_results(candidates, current_ball, target_ball, current_runs):
+        if candidates is None or candidates.empty or target_ball <= current_ball:
+            return None
 
-        # One starting state per historical innings prevents one match from being
-        # counted multiple times when the similarity window contains adjacent balls.
         base = candidates.copy()
         base["distance"] = (base.ball_pos - current_ball).abs()
         base = base.sort_values(["distance", "weight"], ascending=[True, False])
         base = base.drop_duplicates(["match_id", "innings_no"], keep="first")
         if base.empty:
-            return pd.DataFrame(), pd.DataFrame()
+            return None
 
         grouped = history.groupby(["match_id", "innings_no"], sort=False)
-        innings_rows = []
+        records = []
         for _, start in base.iterrows():
             try:
                 full = grouped.get_group((start.match_id, start.innings_no)).sort_values("ball_pos")
             except KeyError:
                 continue
-            # Starting score is the historical score at the matched current state.
+
             start_ball = int(start.ball_pos)
             start_score = float(start.cum_runs)
-            future = full[full.ball_pos > start_ball]
+            future = full[(full.ball_pos > start_ball) & (full.ball_pos <= target_ball)].copy()
             if future.empty:
                 continue
-            innings_rows.append({
+
+            # Per-ball historical run additions. The final row gives the total
+            # runs added between the matched current state and the selected future point.
+            future["ball_runs"] = future.cum_runs.diff().fillna(future.cum_runs - start_score)
+            future["ball_runs"] = future["ball_runs"].clip(lower=0)
+            records.append({
                 "match_id": start.match_id,
                 "innings_no": int(start.innings_no),
+                "start_ball": start_ball,
                 "start_score": start_score,
                 "weight": float(start.weight),
                 "future": future,
             })
 
-        if not innings_rows:
-            return pd.DataFrame(), pd.DataFrame()
+        if not records:
+            return None
 
-        rows = []
-        for cp in range(max(1, current_ball + 1), 121):
-            scores, weights, added = [], [], []
-            reached_flags = []
-            for item in innings_rows:
-                f = item["future"]
-                at = f[f.ball_pos <= cp]
-                if at.empty:
+        # Result 3: average total runs added in the remaining balls.
+        totals = np.asarray([
+            float(r["future"].iloc[-1].cum_runs) - r["start_score"] for r in records
+        ], dtype=float)
+        weights = np.asarray([r["weight"] for r in records], dtype=float)
+        avg_added = float(np.average(totals, weights=weights)) if weights.sum() else float(np.mean(totals))
+        projected_score = float(current_runs + avg_added)
+
+        # Result 4: scoring-trend change, checked at every legal ball in the
+        # selected window. For each checkpoint, calculate the average runs scored
+        # in the most recent six legal balls across the similar historical innings.
+        trend_rows = []
+        for cp in range(current_ball + 1, target_ball + 1):
+            rates = []
+            for r in records:
+                f = r["future"]
+                last6 = f[f.ball_pos <= cp].tail(6)
+                if last6.empty:
                     continue
-                last = at.iloc[-1]
-                score = float(last.cum_runs)
-                scores.append(score)
-                added.append(score - item["start_score"])
-                weights.append(item["weight"])
-                reached_flags.append(1.0 if score >= target_runs else 0.0)
-            if not scores or sum(weights) <= 0:
-                continue
-            w = np.asarray(weights, dtype=float)
-            sc = np.asarray(scores, dtype=float)
-            ad = np.asarray(added, dtype=float)
-            hit = np.asarray(reached_flags, dtype=float)
-            rows.append({
-                "checkpoint_ball": cp,
-                "checkpoint": over_ball_from_balls(cp),
-                "cases": len(scores),
-                "target_reached_pct": float(np.average(hit, weights=w) * 100),
-                "avg_score": float(np.average(sc, weights=w)),
-                "avg_added": float(np.average(ad, weights=w)),
-                "max_added": float(np.max(ad)),
-            })
+                rates.append(float(last6["ball_runs"].sum()))
+            if rates:
+                trend_rows.append({
+                    "ball": cp,
+                    "avg_6ball_runs": float(np.mean(rates)),
+                })
 
-        movement = pd.DataFrame(rows)
+        trend = pd.DataFrame(trend_rows)
+        trend_summary = None
+        if not trend.empty:
+            trend["change"] = trend["avg_6ball_runs"].diff()
+            peak = trend.loc[trend["avg_6ball_runs"].idxmax()]
+            low = trend.loc[trend["avg_6ball_runs"].idxmin()]
+            if len(trend) > 1:
+                biggest_up = trend.loc[trend["change"].idxmax()]
+                biggest_down = trend.loc[trend["change"].idxmin()]
+            else:
+                biggest_up = biggest_down = trend.iloc[0]
+            trend_summary = {
+                "peak_ball": int(peak.ball),
+                "peak_rate": float(peak.avg_6ball_runs),
+                "low_ball": int(low.ball),
+                "low_rate": float(low.avg_6ball_runs),
+                "up_ball": int(biggest_up.ball),
+                "up_change": float(biggest_up.change) if pd.notna(biggest_up.change) else 0.0,
+                "down_ball": int(biggest_down.ball),
+                "down_change": float(biggest_down.change) if pd.notna(biggest_down.change) else 0.0,
+            }
 
-        # First time each similar historical innings actually reached the target.
-        timing_rows = []
-        for item in innings_rows:
-            f = item["future"]
-            hit_rows = f[(f.ball_pos > current_ball) & (f.ball_pos <= 120) & (f.cum_runs >= target_runs)]
-            if hit_rows.empty:
-                continue
-            first = hit_rows.iloc[0]
-            timing_rows.append({
-                "match_id": item["match_id"],
-                "innings_no": item["innings_no"],
-                "first_target_ball": int(first.ball_pos),
-                "first_target": over_ball_from_balls(int(first.ball_pos)),
-                "weight": item["weight"],
-            })
-        timing = pd.DataFrame(timing_rows)
-        return movement, timing
+        return {
+            "cases": len(records),
+            "avg_added": avg_added,
+            "projected_score": projected_score,
+            "trend": trend_summary,
+        }
 
-    st.markdown("### 📊 Historical Movement — Ball-by-Ball")
-    st.caption(
-        "Original historical delivery data from similar current situations. "
-        "Only the selected future window is shown here, ball by ball. "
-        "This is a historical observation, not an entry recommendation."
-    )
+    extra = historical_extra_results(cand, current_ball, target_ball, current_runs)
 
-    movement, timing = historical_movement_map(cand, current_ball, current_runs, target_runs)
-    if movement.empty:
-        st.info("Not enough historical delivery data to build the ball-by-ball movement view.")
+    st.markdown("### 📊 Historical Average & Change")
+    if extra is None:
+        st.info("Not enough historical data for the selected situation.")
     else:
-        # The user-selected future point controls the window. Example: 3.1 -> 6.0
-        # means only the next 18 legal balls are displayed.
-        window = movement[
-            (movement["checkpoint_ball"] > current_ball) &
-            (movement["checkpoint_ball"] <= target_ball)
-        ].copy()
-
-        total_cases = int(movement.iloc[0]["cases"])
-        st.markdown("### 🟨 Historical Change Levels")
-        st.markdown(
-            f'<div class="result_warning"><h3>Historical ball-by-ball pattern</h3>'
-            f'<p><b>Window:</b> {over_ball_from_balls(current_ball + 1)} → {over_ball_from_balls(target_ball)} '
-            f'• <b>{max(0, target_ball-current_ball)} legal balls</b> • <b>{total_cases:,} similar cases</b></p></div>',
-            unsafe_allow_html=True
-        )
-
-        if not window.empty:
-            # Show three useful historical change levels inside ONLY the selected window.
-            # A level is chosen by the largest change in average runs added versus the
-            # previous legal-ball checkpoint; its historical target-reached percentage
-            # and average runs are then shown to the user.
-            window["change_size"] = window["avg_added"].diff().abs().fillna(window["avg_added"].abs())
-            top3 = window.sort_values(
-                ["change_size", "target_reached_pct"], ascending=[False, False]
-            ).head(3).sort_values("checkpoint_ball")
-
-            cols = st.columns(3)
-            for i, (_, row) in enumerate(top3.iterrows()):
-                ball = over_ball_from_balls(int(row["checkpoint_ball"]))
-                pct = float(row["target_reached_pct"])
-                avg_added = safe_round(float(row["avg_added"]))
-                avg_score = safe_round(float(row["avg_score"]))
-                cols[i].metric(
-                    f"Level {i+1} • {ball}",
-                    f"{pct:.1f}%",
-                    f"Avg +{avg_added} runs • Avg score {avg_score}",
+        c3, c4 = st.columns(2)
+        with c3:
+            st.markdown(
+                f'<div class="result_warning"><h3>📈 AVG RUNS IN REMAINING BALLS</h3>'
+                f'<h1>+{safe_round(extra["avg_added"])} runs</h1>'
+                f'<p>Current <b>{current_runs}</b> → historical average future score <b>{safe_round(extra["projected_score"])}</b></p>'
+                f'<p class="small">{target_ball-current_ball} legal balls • {extra["cases"]:,} similar historical innings</p></div>',
+                unsafe_allow_html=True,
+            )
+        with c4:
+            tr = extra["trend"]
+            if tr is None:
+                trend_text = "Not enough ball-by-ball data"
+            else:
+                direction = "increase" if abs(tr["up_change"]) >= abs(tr["down_change"]) else "decrease"
+                if direction == "increase":
+                    change_ball = over_ball_from_balls(tr["up_ball"])
+                    change_value = tr["up_change"]
+                    change_word = "increase"
+                else:
+                    change_ball = over_ball_from_balls(tr["down_ball"])
+                    change_value = abs(tr["down_change"])
+                    change_word = "decrease"
+                trend_text = (
+                    f'<p><b>Biggest average scoring {change_word}:</b> after <b>{change_ball}</b> '
+                    f'({change_value:.1f} runs/6 balls)</p>'
+                    f'<p><b>Highest recent average:</b> {tr["peak_rate"]:.1f} runs/6 balls at <b>{over_ball_from_balls(tr["peak_ball"])}</b></p>'
+                    f'<p><b>Lowest recent average:</b> {tr["low_rate"]:.1f} runs/6 balls at <b>{over_ball_from_balls(tr["low_ball"])}</b></p>'
                 )
-
-            # Keep the old average-run information visible and make it explicit that
-            # it is calculated only from the selected future window.
-            avg_window_added = float(np.average(
-                window["avg_added"].to_numpy(dtype=float),
-                weights=np.maximum(window["cases"].to_numpy(dtype=float), 1),
-            ))
-            avg_window_score = float(np.average(
-                window["avg_score"].to_numpy(dtype=float),
-                weights=np.maximum(window["cases"].to_numpy(dtype=float), 1),
-            ))
-            st.info(
-                f"**Average historical runs added in this window:** {safe_round(avg_window_added)} runs "
-                f"• **Average score at the selected future window:** {safe_round(avg_window_score)}"
+            st.markdown(
+                f'<div class="result_warning"><h3>🔄 AVG SCORING CHANGE</h3>{trend_text}'
+                f'<p class="small">Checked at every legal ball from {over_ball_from_balls(current_ball+1)} to {over_ball_from_balls(target_ball)}.</p></div>',
+                unsafe_allow_html=True,
             )
-
-            st.caption(
-                "The three levels above are the strongest historical ball-to-ball changes within the selected window. "
-                "Percentages describe historical target-reaching frequency at that checkpoint; they are not guarantees."
-            )
-        else:
-            st.info("No legal-ball checkpoints are available inside the selected future window.")
-
-        # Compact metadata; no large 0.1–20.0 table is shown because the selected
-        # future point is the requested analysis window.
-        if not timing.empty:
-            reached_in_window = timing[
-                (timing["first_target_ball"] > current_ball) &
-                (timing["first_target_ball"] <= target_ball)
-            ]
-            st.caption(
-                f"Historical target reached by selected future point: "
-                f"{len(reached_in_window):,}/{total_cases:,} similar cases."
-            )
-        else:
-            st.caption("No similar historical innings reached the selected target in the available data.")
 
     with st.expander("Details (optional)", expanded=True):
         st.write(f"**Current:** {current_runs}/{wickets} at {over_ball_from_balls(current_ball)} → **Future:** {over_ball_from_balls(target_ball)} → **Target:** {target_runs}")
@@ -819,190 +782,3 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
         if win_samples:
             st.write(f"WIN: **{win_pct:.1f}%** • LOSS: **{loss_pct:.1f}%** • Other/Tie: **{other_pct:.1f}%**")
         st.write("VasuDev does not manually increase a probability to make it look better. Advanced validation/backtesting is kept separate from the live result.")
-
-        # ---------- historical checkpoint pattern scanner ----------
-        # This is an observational view of past situations. It does not alter
-        # the existing live result or recommend a betting entry.
-        def historical_checkpoint_pattern(
-            batting, bowling, venue, innings_no, current_ball,
-            current_runs, wickets, target_ball, target_runs
-        ):
-            if history.empty or target_ball <= current_ball:
-                return pd.DataFrame()
-
-            # Checkpoints from the beginning through the selected current point.
-            # Include every legal ball plus completed-over checkpoints.
-            checkpoints = [0]
-            checkpoints += list(range(1, current_ball + 1))
-            checkpoints = sorted(set(x for x in checkpoints if x < target_ball))
-
-            grouped = history.groupby(["match_id", "innings_no"], sort=False)
-            rows = []
-
-            for cp in checkpoints:
-                # Find historical states around this checkpoint.
-                cur = history[
-                    (history.innings_no == innings_no) &
-                    (history.ball_pos.between(max(1, cp-1), cp+1))
-                ].copy()
-                if cp == 0:
-                    # There is no delivery at 0.0; use the first available state.
-                    cur = history[
-                        (history.innings_no == innings_no) &
-                        (history.ball_pos <= 1)
-                    ].copy()
-                if cur.empty:
-                    continue
-
-                # Reconstruct the score/wicket state implied by the current
-                # situation at this checkpoint. We use the observed run rate
-                # from the current state only to define a comparable checkpoint
-                # band, not to manufacture an outcome.
-                if cp == current_ball:
-                    score_center = current_runs
-                    wk_center = wickets
-                else:
-                    # Scale the current score back/up by the ball fraction.
-                    # Use a broad band so the result remains historical.
-                    score_center = current_runs * (cp / max(current_ball, 1))
-                    wk_center = wickets * (cp / max(current_ball, 1))
-
-                # Progressive score/wicket matching.
-                selected = pd.DataFrame()
-                for score_tol, wk_tol in [(3,0), (6,1), (10,2), (999,10)]:
-                    x = cur[(cur.cum_runs-score_center).abs() <= score_tol]
-                    x = x[(x.cum_wk-wk_center).abs() <= wk_tol]
-                    if not x.empty:
-                        selected = x.copy()
-                        if len(selected) >= 25 or score_tol >= 10:
-                            break
-                if selected.empty:
-                    continue
-
-                selected["team_score"] = (
-                    (selected.batting_team == batting).astype(float) * 1.0 +
-                    (selected.bowling_team == bowling).astype(float) * 0.8
-                )
-                selected["ground_score"] = (selected.venue == venue).astype(float)
-                selected["ball_score"] = np.exp(-((selected.ball_pos-cp).abs())/2.5)
-                selected["score_score"] = np.exp(-((selected.cum_runs-score_center).abs())/7.0)
-                selected["wk_score"] = np.exp(-((selected.cum_wk-wk_center).abs())/1.2)
-                selected["similarity"] = (
-                    0.28*selected.score_score +
-                    0.18*selected.wk_score +
-                    0.18*selected.ball_score +
-                    0.18*selected.ground_score +
-                    0.18*(selected.team_score/1.8)
-                )
-                selected["weight"] = selected.similarity.clip(lower=0.05)
-
-                future_rows = []
-                for (mid, inn), g in selected.groupby(["match_id", "innings_no"], sort=False):
-                    try:
-                        full = grouped.get_group((mid, inn))
-                    except KeyError:
-                        continue
-
-                    # The historical state must be before the chosen future point.
-                    before = full[full.ball_pos <= target_ball]
-                    if before.empty:
-                        continue
-
-                    # Use the closest checkpoint state for the starting score.
-                    idx = (g.ball_pos-cp).abs().idxmin()
-                    state_row = g.loc[idx]
-                    future_state = before.iloc[-1]
-
-                    # Avoid counting a historical state that occurs after the
-                    # checkpoint as the starting state.
-                    if int(state_row.ball_pos) > target_ball:
-                        continue
-
-                    future_score = float(future_state.cum_runs)
-                    future_rows.append({
-                        "match_id": mid,
-                        "innings_no": inn,
-                        "future_score": future_score,
-                        "start_score": float(state_row.cum_runs),
-                        "weight": float(state_row.weight),
-                        "winner": str(future_state.winner),
-                        "batting_team": str(state_row.batting_team),
-                    })
-
-                if not future_rows:
-                    continue
-
-                fr = pd.DataFrame(future_rows)
-                fr["hit"] = (fr.future_score >= target_runs).astype(float)
-                yes = weighted_pct(fr.hit.to_numpy(), fr.weight.to_numpy())
-                no = 100 - yes
-
-                valid = fr[fr.winner.str.strip() != ""]
-                if not valid.empty and valid.weight.sum() > 0:
-                    valid["win_flag"] = (
-                        valid.winner == valid.batting_team
-                    ).astype(float)
-                    win_pct = weighted_pct(
-                        valid.win_flag.to_numpy(), valid.weight.to_numpy()
-                    )
-                    loss_pct = 100 - win_pct
-                else:
-                    win_pct = np.nan
-                    loss_pct = np.nan
-
-                rows.append({
-                    "checkpoint": over_ball_from_balls(cp),
-                    "checkpoint_ball": cp,
-                    "samples": len(fr),
-                    "session_yes": yes,
-                    "session_no": no,
-                    "win_pct": win_pct,
-                    "loss_pct": loss_pct,
-                    "expected_score": np.average(
-                        fr.future_score, weights=fr.weight
-                    ),
-                })
-
-            return pd.DataFrame(rows)
-
-        st.markdown("### 🔎 Historical Pattern Analysis")
-        st.caption(
-            "Past IPL situations at different checkpoints are shown for the same "
-            "future point and target. This is historical frequency, not a betting "
-            "entry signal or a guarantee."
-        )
-
-        pattern = historical_checkpoint_pattern(
-            batting, bowling, venue, innings_no, current_ball,
-            current_runs, wickets, target_ball, target_runs
-        )
-
-        if pattern.empty:
-            st.info("Not enough historical checkpoint data for this situation.")
-        else:
-            display = pattern.copy()
-            display["Session YES"] = display["session_yes"].map(lambda x: f"{x:.1f}%")
-            display["Session NO"] = display["session_no"].map(lambda x: f"{x:.1f}%")
-            display["WIN"] = display["win_pct"].map(
-                lambda x: "—" if pd.isna(x) else f"{x:.1f}%"
-            )
-            display["LOSS"] = display["loss_pct"].map(
-                lambda x: "—" if pd.isna(x) else f"{x:.1f}%"
-            )
-            display["Expected"] = display["expected_score"].map(safe_round)
-
-            display = display[
-                ["checkpoint", "samples", "Session YES", "Session NO",
-                 "WIN", "LOSS", "Expected"]
-            ].rename(columns={
-                "checkpoint": "Checkpoint",
-                "samples": "Similar Cases"
-            })
-
-            st.dataframe(display, use_container_width=True, hide_index=True)
-            st.caption(
-                f"Each row asks the same historical question: did similar situations "
-                f"reach {target_runs} by {over_ball_from_balls(target_ball)}? "
-                "The checkpoint changes; the selected future point and target stay fixed."
-            )
-
