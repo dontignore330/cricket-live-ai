@@ -50,7 +50,14 @@ st.markdown("""
 .result_yes { background:#06351f; padding:22px; border-radius:16px; border:2px solid #20c77a; text-align:center; }
 .result_no { background:#3d1010; padding:22px; border-radius:16px; border:2px solid #ef5350; text-align:center; }
 .result_win { background:#06351f; padding:22px; border-radius:16px; border:2px solid #20c77a; text-align:center; }
-.result_loss { background:#3d1010; padding:22px; border-radius:16px; border:2px solid #ef5350; text-align:center; }
+.result_warning {
+        border: 2px solid #d6b656;
+        background: #fff8d6;
+        padding: 16px;
+        border-radius: 12px;
+        margin: 8px 0 14px 0;
+    }
+    .result_loss { background:#3d1010; padding:22px; border-radius:16px; border:2px solid #ef5350; text-align:center; }
 .small { color:#94a3b8; font-size:13px; }
 </style>
 """, unsafe_allow_html=True)
@@ -718,79 +725,90 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
         timing = pd.DataFrame(timing_rows)
         return movement, timing
 
-    st.markdown("### 📊 Historical Movement — 0.1 to 20.0 Overs")
+    st.markdown("### 📊 Historical Movement — Ball-by-Ball")
     st.caption(
         "Original historical delivery data from similar current situations. "
-        "Every legal ball after the current point is checked through 20.0 overs. "
-        "This shows what happened historically; it is not an entry recommendation."
+        "Only the selected future window is shown here, ball by ball. "
+        "This is a historical observation, not an entry recommendation."
     )
 
     movement, timing = historical_movement_map(cand, current_ball, current_runs, target_runs)
     if movement.empty:
-        st.info("Not enough historical delivery data to build the ball-by-ball movement map.")
+        st.info("Not enough historical delivery data to build the ball-by-ball movement view.")
     else:
-        first_col, second_col, third_col, fourth_col = st.columns(4)
-        first_col.metric("Historical Cases", f"{movement.iloc[0]['cases']:,}")
-        if not timing.empty:
-            first_target = timing.first_target_ball.min()
-            last_target = timing.first_target_ball.max()
-            second_col.metric("Earliest Target", over_ball_from_balls(first_target))
-            third_col.metric("Latest Target", over_ball_from_balls(last_target))
-            fourth_col.metric("Reached Target", f"{len(timing):,}/{len(movement.iloc[0]['cases']):,}")
-        else:
-            second_col.metric("Reached Target", "0")
-            third_col.metric("Earliest Target", "—")
-            fourth_col.metric("Latest Target", "—")
+        # The user-selected future point controls the window. Example: 3.1 -> 6.0
+        # means only the next 18 legal balls are displayed.
+        window = movement[
+            (movement["checkpoint_ball"] > current_ball) &
+            (movement["checkpoint_ball"] <= target_ball)
+        ].copy()
 
-        # Compact historical timing summary so the useful "when did movement happen?"
-        # information is visible without opening Details. It is descriptive only.
-        if not timing.empty:
-            timing_counts = timing.groupby("first_target_ball").size().sort_index()
-            total_timing = int(timing_counts.sum())
-            top = timing_counts.sort_values(ascending=False).head(4)
-            st.markdown("#### ⏱️ Historical Change / Entry Timing")
-            st.caption(
-                "These are the most frequent historical points where similar innings first reached the selected target. "
-                "They are historical observations, not instructions to enter or wait."
-            )
-            cols = st.columns(4)
-            for i, (ball, count) in enumerate(top.items()):
-                pct = (count / total_timing * 100) if total_timing else 0
-                cols[i].metric(f"Level {i+1}", over_ball_from_balls(int(ball)), f"{pct:.1f}% of cases")
-            st.write(
-                f"**Earliest:** {over_ball_from_balls(int(timing.first_target_ball.min()))}  •  "
-                f"**Most frequent:** {over_ball_from_balls(int(top.index[0]))}  •  "
-                f"**Latest:** {over_ball_from_balls(int(timing.first_target_ball.max()))}  •  "
-                f"**Target reached:** {len(timing):,}/{len(movement.iloc[0]['cases']):,} similar cases"
-            )
-
-        display_map = movement.copy()
-        display_map["Target reached by"] = display_map.target_reached_pct.map(lambda x: f"{x:.1f}%")
-        display_map["Avg score"] = display_map.avg_score.map(safe_round)
-        display_map["Avg runs added"] = display_map.avg_added.map(safe_round)
-        display_map["Max runs added"] = display_map.max_added.map(safe_round)
-        display_map = display_map[["checkpoint", "cases", "Target reached by", "Avg score", "Avg runs added", "Max runs added"]]
-        display_map.columns = ["Ball", "Historical Cases", "Target reached by", "Avg score", "Avg runs added", "Max runs added"]
-        st.dataframe(display_map, use_container_width=True, hide_index=True, height=620)
-
-        if not timing.empty:
-            timing_counts = timing.groupby("first_target_ball").weight.sum().sort_index()
-            timing_total = float(timing_counts.sum())
-            peak_ball = int(timing_counts.idxmax())
-            peak_pct = float(timing_counts.loc[peak_ball] / timing_total * 100) if timing_total else 0.0
-            st.write(
-                f"**Historical target-crossing timing:** the largest weighted concentration "
-                f"of first target crossings occurred at **{over_ball_from_balls(peak_ball)}** "
-                f"({peak_pct:.1f}% of historical target-reaching cases)."
-            )
-        else:
-            st.write("**Historical target-crossing timing:** no similar historical innings reached the selected target by 20.0 overs.")
-
-        st.caption(
-            f"League: {league} • Current: {current_runs}/{wickets} at {over_ball_from_balls(current_ball)} • "
-            f"Target: {target_runs} by {over_ball_from_balls(target_ball)}. "
-            "Each row is calculated from the original ball-by-ball history; no future result is invented."
+        total_cases = int(movement.iloc[0]["cases"])
+        st.markdown("### 🟨 Historical Change Levels")
+        st.markdown(
+            f'<div class="result_warning"><h3>Historical ball-by-ball pattern</h3>'
+            f'<p><b>Window:</b> {over_ball_from_balls(current_ball + 1)} → {over_ball_from_balls(target_ball)} '
+            f'• <b>{max(0, target_ball-current_ball)} legal balls</b> • <b>{total_cases:,} similar cases</b></p></div>',
+            unsafe_allow_html=True
         )
+
+        if not window.empty:
+            # Show three useful historical change levels inside ONLY the selected window.
+            # A level is chosen by the largest change in average runs added versus the
+            # previous legal-ball checkpoint; its historical target-reached percentage
+            # and average runs are then shown to the user.
+            window["change_size"] = window["avg_added"].diff().abs().fillna(window["avg_added"].abs())
+            top3 = window.sort_values(
+                ["change_size", "target_reached_pct"], ascending=[False, False]
+            ).head(3).sort_values("checkpoint_ball")
+
+            cols = st.columns(3)
+            for i, (_, row) in enumerate(top3.iterrows()):
+                ball = over_ball_from_balls(int(row["checkpoint_ball"]))
+                pct = float(row["target_reached_pct"])
+                avg_added = safe_round(float(row["avg_added"]))
+                avg_score = safe_round(float(row["avg_score"]))
+                cols[i].metric(
+                    f"Level {i+1} • {ball}",
+                    f"{pct:.1f}%",
+                    f"Avg +{avg_added} runs • Avg score {avg_score}",
+                )
+
+            # Keep the old average-run information visible and make it explicit that
+            # it is calculated only from the selected future window.
+            avg_window_added = float(np.average(
+                window["avg_added"].to_numpy(dtype=float),
+                weights=np.maximum(window["cases"].to_numpy(dtype=float), 1),
+            ))
+            avg_window_score = float(np.average(
+                window["avg_score"].to_numpy(dtype=float),
+                weights=np.maximum(window["cases"].to_numpy(dtype=float), 1),
+            ))
+            st.info(
+                f"**Average historical runs added in this window:** {safe_round(avg_window_added)} runs "
+                f"• **Average score at the selected future window:** {safe_round(avg_window_score)}"
+            )
+
+            st.caption(
+                "The three levels above are the strongest historical ball-to-ball changes within the selected window. "
+                "Percentages describe historical target-reaching frequency at that checkpoint; they are not guarantees."
+            )
+        else:
+            st.info("No legal-ball checkpoints are available inside the selected future window.")
+
+        # Compact metadata; no large 0.1–20.0 table is shown because the selected
+        # future point is the requested analysis window.
+        if not timing.empty:
+            reached_in_window = timing[
+                (timing["first_target_ball"] > current_ball) &
+                (timing["first_target_ball"] <= target_ball)
+            ]
+            st.caption(
+                f"Historical target reached by selected future point: "
+                f"{len(reached_in_window):,}/{total_cases:,} similar cases."
+            )
+        else:
+            st.caption("No similar historical innings reached the selected target in the available data.")
 
     with st.expander("Details (optional)", expanded=True):
         st.write(f"**Current:** {current_runs}/{wickets} at {over_ball_from_balls(current_ball)} → **Future:** {over_ball_from_balls(target_ball)} → **Target:** {target_runs}")
