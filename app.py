@@ -409,7 +409,7 @@ def historical_win_similarity(batting, bowling, venue, innings_no, current_ball,
     return x
 
 
-def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sample_size=40, seed=42):
+def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sample_size=100, seed=42):
     """Time-safe historical backtest: each test state excludes its own match."""
     if history_df.empty:
         return None
@@ -428,6 +428,8 @@ def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sampl
     session_probs = []
     win_hits = []
     win_probs = []
+    session_actuals = []
+    win_actuals = []
     used_states = 0
 
     grouped = h.groupby(["match_id", "innings_no"], sort=False)
@@ -499,6 +501,7 @@ def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sampl
         actual_session = 1.0 if (float(future.iloc[-1].cum_runs) >= target_bt) else 0.0
         session_hits.append(1.0 if (session_prob >= 50) == bool(actual_session) else 0.0)
         session_probs.append(session_prob)
+        session_actuals.append(actual_session)
 
         # Win probability: same-match outcome is held out from the candidate pool.
         pool["won_flag"]=(pool.winner==pool.batting_team).astype(float)
@@ -508,6 +511,7 @@ def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sampl
             actual_win=1.0 if str(state.winner)==str(state.batting_team) else 0.0
             win_hits.append(1.0 if (win_prob >= 50)==bool(actual_win) else 0.0)
             win_probs.append(win_prob)
+            win_actuals.append(actual_win)
         used_states += 1
 
     if used_states == 0:
@@ -518,13 +522,17 @@ def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sampl
         "session_avg_probability": float(np.mean(session_probs)) if session_probs else None,
         "win_directional_accuracy": 100*float(np.mean(win_hits)) if win_hits else None,
         "win_avg_probability": float(np.mean(win_probs)) if win_probs else None,
+        "session_probs": session_probs,
+        "session_actuals": session_actuals,
+        "win_probs": win_probs,
+        "win_actuals": win_actuals,
     }
 
 with st.expander("🧪 VasuDev Historical Backtest", expanded=False):
     st.caption("This test uses past match states and excludes the same match from its comparison pool. It tests the current target over the current ball horizon; it is a directional backtest, not a guarantee of future accuracy.")
     if st.button("▶ Run Backtest", use_container_width=True):
         with st.spinner("Testing historical situations..."):
-            bt = backtest_session_and_win(history, target_runs=target_runs, horizon_balls=remaining, sample_size=40, seed=42)
+            bt = backtest_session_and_win(history, target_runs=target_runs, horizon_balls=remaining, sample_size=100, seed=42)
         if bt is None:
             st.warning("Not enough historical data for a backtest.")
         else:
@@ -538,7 +546,37 @@ with st.expander("🧪 VasuDev Historical Backtest", expanded=False):
                 d.metric("Avg session probability", f"{bt['session_avg_probability']:.1f}%")
             if bt["win_avg_probability"] is not None:
                 st.write(f"Average historical WIN probability across tested states: **{bt['win_avg_probability']:.1f}%**")
-            st.info("Backtest accuracy is measured on a limited sample and can change with the sample. It is not an accuracy guarantee.")
+            st.info("Backtest accuracy is measured only on held-out historical states. It is a measurement of past performance, not a guarantee of future accuracy.")
+
+            # Probability calibration: a 70% prediction should historically occur
+            # close to 70% of the time. This checks the quality of the probabilities,
+            # not just whether the final YES/NO direction was correct.
+            if bt.get("session_probs") and bt.get("session_actuals"):
+                probs = np.asarray(bt["session_probs"], dtype=float) / 100.0
+                actuals = np.asarray(bt["session_actuals"], dtype=float)
+                brier = float(np.mean((probs - actuals) ** 2))
+                st.markdown("#### 🎯 Session Probability Calibration")
+                st.write(f"Brier score: **{brier:.4f}** (0 is perfect)")
+                bins=[]
+                for lo,hi in [(0,20),(20,40),(40,60),(60,80),(80,100)]:
+                    mask=(probs*100 >= lo) & (probs*100 < hi if hi < 100 else probs*100 <= hi)
+                    if mask.any():
+                        bins.append({"Predicted range":f"{lo}–{hi}%","Tests":int(mask.sum()),"Average predicted %":round(float(probs[mask].mean()*100),1),"Actual YES %":round(float(actuals[mask].mean()*100),1)})
+                if bins:
+                    st.dataframe(pd.DataFrame(bins), use_container_width=True, hide_index=True)
+            if bt.get("win_probs") and bt.get("win_actuals"):
+                probs = np.asarray(bt["win_probs"], dtype=float) / 100.0
+                actuals = np.asarray(bt["win_actuals"], dtype=float)
+                brier = float(np.mean((probs - actuals) ** 2))
+                st.markdown("#### 🏆 WIN Probability Calibration")
+                st.write(f"Brier score: **{brier:.4f}** (0 is perfect)")
+                bins=[]
+                for lo,hi in [(0,20),(20,40),(40,60),(60,80),(80,100)]:
+                    mask=(probs*100 >= lo) & (probs*100 < hi if hi < 100 else probs*100 <= hi)
+                    if mask.any():
+                        bins.append({"Predicted range":f"{lo}–{hi}%","Tests":int(mask.sum()),"Average predicted %":round(float(probs[mask].mean()*100),1),"Actual WIN %":round(float(actuals[mask].mean()*100),1)})
+                if bins:
+                    st.dataframe(pd.DataFrame(bins), use_container_width=True, hide_index=True)
 
 if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_ball<=current_ball)):
     st.subheader("🧠 VasuDev Analysis")
