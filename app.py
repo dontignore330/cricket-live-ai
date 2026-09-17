@@ -49,6 +49,8 @@ st.markdown("""
 .card { background:#0f1b2d; padding:18px; border-radius:14px; border:1px solid #26364d; }
 .result_yes { background:#06351f; padding:22px; border-radius:16px; border:2px solid #20c77a; text-align:center; }
 .result_no { background:#3d1010; padding:22px; border-radius:16px; border:2px solid #ef5350; text-align:center; }
+.result_win { background:#06351f; padding:22px; border-radius:16px; border:2px solid #20c77a; text-align:center; }
+.result_loss { background:#3d1010; padding:22px; border-radius:16px; border:2px solid #ef5350; text-align:center; }
 .small { color:#94a3b8; font-size:13px; }
 </style>
 """, unsafe_allow_html=True)
@@ -603,7 +605,13 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
 
     st.markdown("### 🏆 WINNING")
     if win_samples:
-        st.markdown(f"<div class=\"card\"><h2>{batting} WIN — {win_pct:.1f}%</h2><h3>LOSS — {loss_pct:.1f}%</h3><p class=\"small\">Historical probability • {win_samples:,} similar match states • Reliability: {reliability(win_samples)}</p></div>",unsafe_allow_html=True)
+        win_box = "result_win" if win_pct >= loss_pct else "result_loss"
+        st.markdown(
+            f"<div class=\"{win_box}\"><h2>{batting} WIN — {win_pct:.1f}%</h2>"
+            f"<h3>LOSS — {loss_pct:.1f}%</h3>"
+            f"<p class=\"small\">Historical probability • {win_samples:,} similar match states • Reliability: {reliability(win_samples)}</p></div>",
+            unsafe_allow_html=True
+        )
     else:
         st.info("Not enough historical match-result data for this situation.")
 
@@ -734,6 +742,28 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
             third_col.metric("Earliest Target", "—")
             fourth_col.metric("Latest Target", "—")
 
+        # Compact historical timing summary so the useful "when did movement happen?"
+        # information is visible without opening Details. It is descriptive only.
+        if not timing.empty:
+            timing_counts = timing.groupby("first_target_ball").size().sort_index()
+            total_timing = int(timing_counts.sum())
+            top = timing_counts.sort_values(ascending=False).head(4)
+            st.markdown("#### ⏱️ Historical Change / Entry Timing")
+            st.caption(
+                "These are the most frequent historical points where similar innings first reached the selected target. "
+                "They are historical observations, not instructions to enter or wait."
+            )
+            cols = st.columns(4)
+            for i, (ball, count) in enumerate(top.items()):
+                pct = (count / total_timing * 100) if total_timing else 0
+                cols[i].metric(f"Level {i+1}", over_ball_from_balls(int(ball)), f"{pct:.1f}% of cases")
+            st.write(
+                f"**Earliest:** {over_ball_from_balls(int(timing.first_target_ball.min()))}  •  "
+                f"**Most frequent:** {over_ball_from_balls(int(top.index[0]))}  •  "
+                f"**Latest:** {over_ball_from_balls(int(timing.first_target_ball.max()))}  •  "
+                f"**Target reached:** {len(timing):,}/{len(movement.iloc[0]['cases']):,} similar cases"
+            )
+
         display_map = movement.copy()
         display_map["Target reached by"] = display_map.target_reached_pct.map(lambda x: f"{x:.1f}%")
         display_map["Avg score"] = display_map.avg_score.map(safe_round)
@@ -762,7 +792,7 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
             "Each row is calculated from the original ball-by-ball history; no future result is invented."
         )
 
-    with st.expander("Details (optional)", expanded=False):
+    with st.expander("Details (optional)", expanded=True):
         st.write(f"**Current:** {current_runs}/{wickets} at {over_ball_from_balls(current_ball)} → **Future:** {over_ball_from_balls(target_ball)} → **Target:** {target_runs}")
         if session_samples:
             st.write(f"YES: **{session_yes:.1f}%** • NO: **{session_no:.1f}%**")
