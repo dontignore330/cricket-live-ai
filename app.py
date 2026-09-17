@@ -227,10 +227,8 @@ def safe_round(x):
     except Exception:
         return 0
 
-@st.cache_resource(show_spinner=False, ttl=3600)
-def load_history(selected_league, db_path_str):
-    # Keep the large historical dataframe out of the initial page load.
-    # Streamlit caches this per league/database, so Analyze reuses it.
+@st.cache_data(show_spinner=False)
+def load_history(selected_league):
     q = """
     SELECT d.match_id, d.innings_no, d.batting_team, d.bowling_team,
            d.over_no, d.ball_no, d.runs, d.wickets, d.id,
@@ -240,11 +238,7 @@ def load_history(selected_league, db_path_str):
     WHERE d.league=?
     ORDER BY d.match_id, d.innings_no, d.id
     """
-    local_conn = sqlite3.connect(f"file:{Path(db_path_str).resolve()}?mode=ro", uri=True)
-    try:
-        df = pd.read_sql_query(q, local_conn, params=(selected_league,))
-    finally:
-        local_conn.close()
+    df = pd.read_sql_query(q, conn, params=(selected_league,))
     if df.empty:
         return df
     # Historical files can contain illegal-delivery labels such as 4.7 or 4.10.
@@ -276,60 +270,10 @@ def load_history(selected_league, db_path_str):
     df["winner"] = df["winner"].fillna("").astype(str)
     return df
 
-# Keep historical data in the current Streamlit session after first analysis.
-# This prevents a full dataframe reload on every button rerun.
-if "vasudev_history" not in st.session_state:
-    st.session_state.vasudev_history = pd.DataFrame()
-if st.session_state.get("vasudev_history_league") != league:
-    st.session_state.vasudev_history = pd.DataFrame()
-    st.session_state.vasudev_history_league = league
-    st.session_state.vasudev_fast_index = None
-history = st.session_state.vasudev_history
+history = load_history(league)
 
-# Fast lookup structures. These contain references/NumPy arrays, not duplicate full dataframes.
-# They are rebuilt only when a league history is first loaded in this session.
-if "vasudev_fast_index" not in st.session_state:
-    st.session_state.vasudev_fast_index = None
-
-def build_fast_index(df):
-    if df is None or df.empty:
-        return {"state": None, "innings": {}}
-    ordered = df.sort_values(["match_id", "innings_no", "ball_pos", "id"], kind="mergesort")
-    state = ordered.set_index(["innings_no", "ball_pos"], drop=False).sort_index()
-    innings = {}
-    for key, g in ordered.groupby(["match_id", "innings_no"], sort=False):
-        innings[key] = {
-            "ball": g["ball_pos"].to_numpy(dtype=np.int32, copy=False),
-            "cum": g["cum_runs"].to_numpy(dtype=np.int32, copy=False),
-            "runs": g["runs"].to_numpy(dtype=np.int16, copy=False),
-        }
-    return {"state": state, "innings": innings}
-
-def get_fast_index():
-    idx = st.session_state.get("vasudev_fast_index")
-    if idx is None and not history.empty:
-        idx = build_fast_index(history)
-        st.session_state.vasudev_fast_index = idx
-    return idx
-
-@st.cache_data(show_spinner=False, ttl=3600)
-def load_metadata(db_path_str, selected_league):
-    local_conn = sqlite3.connect(f"file:{Path(db_path_str).resolve()}?mode=ro", uri=True)
-    try:
-        teams_df = pd.read_sql_query(
-            "SELECT DISTINCT batting_team FROM deliveries WHERE league=? ORDER BY batting_team",
-            local_conn, params=(selected_league,)
-        )
-        venues_df = pd.read_sql_query(
-            "SELECT DISTINCT venue FROM matches WHERE league=? AND venue IS NOT NULL AND venue<>'' ORDER BY venue",
-            local_conn, params=(selected_league,)
-        )
-        return (teams_df.iloc[:,0].dropna().astype(str).tolist(),
-                venues_df.iloc[:,0].dropna().astype(str).tolist())
-    finally:
-        local_conn.close()
-
-teams, venues = load_metadata(str(selected_db), league)
+teams = get_values("SELECT DISTINCT batting_team FROM deliveries WHERE league=? ORDER BY batting_team", (league,))
+venues = get_values("SELECT DISTINCT venue FROM matches WHERE league=? AND venue IS NOT NULL AND venue<>'' ORDER BY venue", (league,))
 if not teams:
     st.error(f"No teams were found for {league}.")
     st.stop()
@@ -385,23 +329,11 @@ def similarity_candidates(batting, bowling, venue, innings_no, current_ball, cur
     if history.empty or target_ball <= current_ball:
         return pd.DataFrame(), "No usable historical data"
 
-    # Direct indexed lookup instead of scanning every historical delivery.
-    idx = get_fast_index()
-    state_idx = idx.get("state") if idx else None
-    if state_idx is None:
-        return pd.DataFrame(), "No historical state index"
-    try:
-        cur = state_idx.loc[(innings_no, current_ball)].copy()
-        if isinstance(cur, pd.Series):
-            cur = cur.to_frame().T
-    except KeyError:
-        cur = pd.DataFrame()
+    # Only compare situations that have enough future deliveries to reach the requested point.
+    cur = history[(history.innings_no == innings_no) & (history.ball_pos == current_ball)].copy()
     if cur.empty:
         # A small ball-position window prevents sparse exact-ball positions from killing the result.
-        try:
-            cur = state_idx.loc[(innings_no, slice(max(1,current_ball-1), current_ball+1))].copy()
-        except KeyError:
-            cur = pd.DataFrame()
+        cur = history[(history.innings_no == innings_no) & (history.ball_pos.between(max(1,current_ball-1), current_ball+1))].copy()
     if cur.empty:
         return pd.DataFrame(), "No historical state near this ball"
 
@@ -441,29 +373,27 @@ def similarity_candidates(batting, bowling, venue, innings_no, current_ball, cur
     return selected, used
 
 def add_future_scores(candidates, target_ball):
-    """Attach the score at/before target_ball using direct per-innings arrays."""
     if candidates.empty:
         return candidates
-    idx = get_fast_index()
-    innings_map = idx.get("innings", {}) if idx else {}
-    rows = []
-    for mid, inn in candidates[["match_id", "innings_no"]].drop_duplicates().itertuples(index=False, name=None):
-        data = innings_map.get((mid, inn))
-        if data is None:
+    future_rows=[]
+    # Candidate rows are only a few thousand at most; find first delivery at/after target in each innings.
+    grouped = history.groupby(["match_id","innings_no"], sort=False)
+    for idx,row in candidates.iterrows():
+        key=(row.match_id,row.innings_no)
+        try:
+            g=grouped.get_group(key)
+        except KeyError:
             continue
-        balls = data["ball"]
-        pos = int(np.searchsorted(balls, target_ball, side="right") - 1)
-        if pos >= 0:
-            rows.append((mid, inn, int(data["cum"][pos])))
-    if not rows:
-        return pd.DataFrame()
-    target_rows = pd.DataFrame(rows, columns=["match_id", "innings_no", "future_score"])
-    out = candidates.merge(target_rows, on=["match_id", "innings_no"], how="inner")
-    if out.empty:
-        return out
-    out["future_score"] = out["future_score"].astype(float)
-    out["future_runs"] = out["future_score"] - out["cum_runs"]
-    return out
+        f=g[g.ball_pos <= target_ball]
+        if f.empty:
+            continue
+        # Prefer the state exactly at target; if no legal delivery exists, use the last score at/before it.
+        fr=f.iloc[-1]
+        r=row.to_dict()
+        r["future_score"]=float(fr.cum_runs)
+        r["future_runs"]=float(fr.cum_runs-row.cum_runs)
+        future_rows.append(r)
+    return pd.DataFrame(future_rows)
 
 def weighted_pct(values, weights):
     if len(values)==0 or weights.sum()<=0:
@@ -473,14 +403,7 @@ def weighted_pct(values, weights):
 def historical_win_similarity(batting, bowling, venue, innings_no, current_ball, current_runs, wickets):
     if history.empty:
         return None
-    idx = get_fast_index()
-    state_idx = idx.get("state") if idx else None
-    if state_idx is None:
-        return None
-    try:
-        x=state_idx.loc[(innings_no, slice(max(1,current_ball-1),current_ball+1))].copy()
-    except KeyError:
-        x=pd.DataFrame()
+    x=history[(history.innings_no==innings_no) & (history.ball_pos.between(max(1,current_ball-1),current_ball+1))].copy()
     if x.empty:
         return None
     x=x[(x.cum_runs-current_runs).abs()<=20]
@@ -617,12 +540,6 @@ def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sampl
 with st.expander("🧪 VasuDev Historical Validation (advanced)", expanded=False):
     st.caption("Advanced validation runs only when requested. It uses held-out historical match states and never changes a result just to make the percentage look higher.")
     if st.button("▶ Run Historical Validation", use_container_width=True):
-        if history.empty:
-            with st.spinner("Loading historical cricket data..."):
-                history = load_history(league, str(selected_db))
-                st.session_state.vasudev_history = history
-                st.session_state.vasudev_history_league = league
-                st.session_state.vasudev_fast_index = build_fast_index(history)
         with st.spinner("Validating VasuDev on historical situations..."):
             bt = backtest_session_and_win(history, target_runs=target_runs, horizon_balls=remaining, sample_size=100, seed=42)
         if bt is None:
@@ -647,18 +564,6 @@ with st.expander("🧪 VasuDev Historical Validation (advanced)", expanded=False
                 st.write(f"WIN Brier score: **{np.mean((probs-actuals)**2):.4f}** (lower is better)")
 
 if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_ball<=current_ball)):
-    # Load the large historical dataframe only when the user actually analyzes.
-    # This keeps password unlock and normal page interaction fast.
-    if history.empty:
-        with st.spinner("Loading historical cricket data..."):
-            history = load_history(league, str(selected_db))
-            st.session_state.vasudev_history = history
-            st.session_state.vasudev_history_league = league
-            st.session_state.vasudev_fast_index = build_fast_index(history)
-    if history.empty:
-        st.error("Historical data could not be loaded for this league.")
-        st.stop()
-
     # Final user-facing output is intentionally compact. Detailed calculations
     # remain available in the optional Details expander.
     win_df=historical_win_similarity(batting,bowling,venue,innings_no,current_ball,current_runs,wickets)
@@ -761,26 +666,13 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
         })
         starts["case_id"] = np.arange(len(starts), dtype=np.int32)
 
-        # Pull only the selected innings directly from the pre-built arrays.
-        idx = get_fast_index()
-        innings_map = idx.get("innings", {}) if idx else {}
-        future_parts = []
-        for case in starts.itertuples(index=False):
-            data = innings_map.get((case.match_id, case.innings_no))
-            if data is None:
-                continue
-            mask = (data["ball"] > int(case.start_ball)) & (data["ball"] <= int(target_ball))
-            if not np.any(mask):
-                continue
-            future_parts.append(pd.DataFrame({
-                "case_id": int(case.case_id),
-                "match_id": case.match_id,
-                "innings_no": case.innings_no,
-                "ball_pos": data["ball"][mask],
-                "cum_runs": data["cum"][mask],
-                "runs": data["runs"][mask],
-            }))
-        future = pd.concat(future_parts, ignore_index=True) if future_parts else pd.DataFrame()
+        # Only bring in historical deliveries from innings that actually matched.
+        future_pool = history[["match_id", "innings_no", "ball_pos", "cum_runs", "runs"]].copy()
+        future = starts.merge(future_pool, on=["match_id", "innings_no"], how="inner")
+        future = future[
+            (future.ball_pos > future.start_ball) &
+            (future.ball_pos <= target_ball)
+        ].copy()
         if future.empty:
             return None
 
