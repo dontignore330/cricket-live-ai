@@ -276,10 +276,14 @@ def load_history(selected_league, db_path_str):
     df["winner"] = df["winner"].fillna("").astype(str)
     return df
 
-# IMPORTANT: Do not load the full ball-by-ball dataframe here.
-# That was the main reason password unlock/page opening felt slow.
-# The large history is loaded lazily only when ANALYZE is pressed.
-history = pd.DataFrame()
+# Keep historical data in the current Streamlit session after first analysis.
+# This prevents a full dataframe reload on every button rerun.
+if "vasudev_history" not in st.session_state:
+    st.session_state.vasudev_history = pd.DataFrame()
+if st.session_state.get("vasudev_history_league") != league:
+    st.session_state.vasudev_history = pd.DataFrame()
+    st.session_state.vasudev_history_league = league
+history = st.session_state.vasudev_history
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_metadata(db_path_str, selected_league):
@@ -407,12 +411,14 @@ def add_future_scores(candidates, target_ball):
     if candidates.empty:
         return candidates
 
-    target_rows = history[history.ball_pos <= target_ball]
-    if target_rows.empty:
+    keys = candidates[["match_id", "innings_no"]].drop_duplicates()
+    future_pool = history.merge(keys, on=["match_id", "innings_no"], how="inner")
+    future_pool = future_pool[future_pool.ball_pos <= target_ball]
+    if future_pool.empty:
         return pd.DataFrame()
 
     target_rows = (
-        target_rows.sort_values(["match_id", "innings_no", "ball_pos"])
+        future_pool.sort_values(["match_id", "innings_no", "ball_pos"])
         .groupby(["match_id", "innings_no"], sort=False)
         .tail(1)[["match_id", "innings_no", "cum_runs"]]
         .rename(columns={"cum_runs": "future_score"})
@@ -573,6 +579,8 @@ with st.expander("🧪 VasuDev Historical Validation (advanced)", expanded=False
         if history.empty:
             with st.spinner("Loading historical cricket data..."):
                 history = load_history(league, str(selected_db))
+                st.session_state.vasudev_history = history
+                st.session_state.vasudev_history_league = league
         with st.spinner("Validating VasuDev on historical situations..."):
             bt = backtest_session_and_win(history, target_runs=target_runs, horizon_balls=remaining, sample_size=100, seed=42)
         if bt is None:
@@ -602,6 +610,8 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
     if history.empty:
         with st.spinner("Loading historical cricket data..."):
             history = load_history(league, str(selected_db))
+            st.session_state.vasudev_history = history
+            st.session_state.vasudev_history_league = league
     if history.empty:
         st.error("Historical data could not be loaded for this league.")
         st.stop()
@@ -708,8 +718,10 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
         })
         starts["case_id"] = np.arange(len(starts), dtype=np.int32)
 
-        # Only bring in historical deliveries from innings that actually matched.
-        future_pool = history[["match_id", "innings_no", "ball_pos", "cum_runs", "runs"]].copy()
+        # Only bring in deliveries from innings that actually matched.
+        keys = starts[["match_id", "innings_no"]].drop_duplicates()
+        future_pool = history.merge(keys, on=["match_id", "innings_no"], how="inner")
+        future_pool = future_pool[["match_id", "innings_no", "ball_pos", "cum_runs", "runs"]]
         future = starts.merge(future_pool, on=["match_id", "innings_no"], how="inner")
         future = future[
             (future.ball_pos > future.start_ball) &
