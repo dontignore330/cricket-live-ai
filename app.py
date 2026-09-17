@@ -760,14 +760,14 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
 
     extra = historical_extra_results(cand, current_ball, target_ball, current_runs)
 
-    st.markdown("### 📊 Historical Average & Change")
+    st.markdown("### 📊 HISTORICAL AVERAGE & SCORING CHANGE")
     if extra is None:
         st.info("Not enough historical data for the selected situation.")
     else:
         c3, c4 = st.columns(2)
         with c3:
             st.markdown(
-                f'<div class="result_avg"><h3>📈 AVG RUNS IN REMAINING BALLS</h3>'
+                f'<div class="result_avg"><h3>📈 HISTORICAL AVERAGE</h3>'
                 f'<h1>+{safe_round(extra["avg_added"])} runs</h1>'
                 f'<p>Current <b>{current_runs}</b> → historical average future score <b>{safe_round(extra["projected_score"])}</b></p>'
                 f'<p><b>{extra["reached"]:,}</b> of <b>{extra["cases"]:,}</b> similar innings reached <b>{extra["avg_threshold"]}+ runs</b>; '
@@ -798,7 +798,7 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
                 unsafe_allow_html=True,
             )
 
-    with st.expander("Details (optional)", expanded=True):
+    with st.expander("Details (optional)", expanded=False):
         st.write(f"**Current:** {current_runs}/{wickets} at {over_ball_from_balls(current_ball)} → **Future:** {over_ball_from_balls(target_ball)} → **Target:** {target_runs}")
         if session_samples:
             st.write(f"YES: **{session_yes:.1f}%** • NO: **{session_no:.1f}%**")
