@@ -408,6 +408,138 @@ def historical_win_similarity(batting, bowling, venue, innings_no, current_ball,
     x["won_flag"]=(x.winner==x.batting_team).astype(float)
     return x
 
+
+def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sample_size=40, seed=42):
+    """Time-safe historical backtest: each test state excludes its own match."""
+    if history_df.empty:
+        return None
+    h = history_df.copy()
+    # Keep states that have a meaningful future horizon. We test a fixed 24-ball session
+    # because it is a common, simple benchmark and avoids cherry-picking a target.
+    candidates = h[h.ball_pos <= 96].copy()
+    if candidates.empty:
+        return None
+    rng = np.random.default_rng(seed)
+    keys = candidates[["match_id", "innings_no"]].drop_duplicates()
+    n = min(sample_size, len(keys))
+    chosen = keys.iloc[rng.choice(len(keys), size=n, replace=False)]
+
+    session_hits = []
+    session_probs = []
+    win_hits = []
+    win_probs = []
+    used_states = 0
+
+    grouped = h.groupby(["match_id", "innings_no"], sort=False)
+    for _, keyrow in chosen.iterrows():
+        match_id = keyrow.match_id
+        innings_no_bt = int(keyrow.innings_no)
+        own = grouped.get_group((match_id, innings_no_bt))
+        # Choose a real historical state, avoiding the very first few balls.
+        usable = own[(own.ball_pos >= 12) & (own.ball_pos <= 96)].copy()
+        if usable.empty:
+            continue
+        state = usable.iloc[int(rng.integers(0, len(usable)))]
+        current_ball_bt = int(state.ball_pos)
+        target_ball_bt = current_ball_bt + int(horizon_balls)
+
+        # Actual session outcome at/before the same fixed horizon.
+        future = own[own.ball_pos <= target_ball_bt]
+        if future.empty:
+            continue
+        actual_future_runs = float(future.iloc[-1].cum_runs - state.cum_runs)
+        # Use the same target for every test state. This avoids the invalid
+        # practice of defining the target from the already-known future outcome.
+        target_bt = float(target_runs)
+
+        # Exclude the current match entirely to prevent leakage.
+        pool = h[(h.innings_no == innings_no_bt) & (h.match_id != match_id)].copy()
+        if pool.empty:
+            continue
+        pool = pool[pool.ball_pos.between(max(1, current_ball_bt-1), current_ball_bt+1)]
+        pool = pool[(pool.cum_runs-state.cum_runs).abs() <= 20]
+        pool = pool[(pool.cum_wk-state.cum_wk).abs() <= 3]
+        if pool.empty:
+            continue
+
+        pool["team_score"] = (pool.batting_team == state.batting_team).astype(float) + 0.8*(pool.bowling_team == state.bowling_team).astype(float)
+        pool["ground_score"] = (pool.venue == state.venue).astype(float)
+        pool["ball_score"] = np.exp(-((pool.ball_pos-current_ball_bt).abs())/2.5)
+        pool["score_score"] = np.exp(-((pool.cum_runs-state.cum_runs).abs())/7.0)
+        pool["wk_score"] = np.exp(-((pool.cum_wk-state.cum_wk).abs())/1.2)
+        pool["similarity"] = (0.28*pool.score_score + 0.18*pool.wk_score + 0.18*pool.ball_score + 0.18*pool.ground_score + 0.18*(pool.team_score/1.8))
+        pool["weight"] = pool.similarity.clip(lower=0.05)
+
+        # Session probability: historical probability of reaching the fixed target
+        # by the same horizon. The test match itself is excluded from the pool.
+        future_rows=[]
+        for (mid, inn), g in pool.groupby(["match_id","innings_no"], sort=False):
+            f=g[g.ball_pos <= target_ball_bt]
+            if f.empty:
+                continue
+            # g only contains states near current ball; retrieve the full innings.
+            try:
+                full = grouped.get_group((mid, inn))
+            except KeyError:
+                continue
+            ff=full[full.ball_pos <= target_ball_bt]
+            if ff.empty:
+                continue
+            first=g.iloc[0]
+            # Use the closest current state from this historical innings.
+            idx=(g.ball_pos-current_ball_bt).abs().idxmin()
+            first=g.loc[idx]
+            actual=float(ff.iloc[-1].cum_runs-first.cum_runs)
+            future_rows.append((mid, inn, actual, float(first.weight)))
+        if not future_rows:
+            continue
+        fr=pd.DataFrame(future_rows, columns=["match_id","innings_no","future_runs","weight"])
+        session_prob=100*float(np.average((fr.future_runs >= target_bt).astype(float), weights=fr.weight))
+        # Actual event in the held-out match.
+        actual_session = 1.0 if (float(future.iloc[-1].cum_runs) >= target_bt) else 0.0
+        session_hits.append(1.0 if (session_prob >= 50) == bool(actual_session) else 0.0)
+        session_probs.append(session_prob)
+
+        # Win probability: same-match outcome is held out from the candidate pool.
+        pool["won_flag"]=(pool.winner==pool.batting_team).astype(float)
+        valid=pool[pool.winner.str.strip() != ""]
+        if not valid.empty and valid.weight.sum()>0:
+            win_prob=100*float(np.average(valid.won_flag, weights=valid.weight))
+            actual_win=1.0 if str(state.winner)==str(state.batting_team) else 0.0
+            win_hits.append(1.0 if (win_prob >= 50)==bool(actual_win) else 0.0)
+            win_probs.append(win_prob)
+        used_states += 1
+
+    if used_states == 0:
+        return None
+    return {
+        "states": used_states,
+        "session_directional_accuracy": 100*float(np.mean(session_hits)) if session_hits else None,
+        "session_avg_probability": float(np.mean(session_probs)) if session_probs else None,
+        "win_directional_accuracy": 100*float(np.mean(win_hits)) if win_hits else None,
+        "win_avg_probability": float(np.mean(win_probs)) if win_probs else None,
+    }
+
+with st.expander("🧪 VasuDev Historical Backtest", expanded=False):
+    st.caption("This test uses past match states and excludes the same match from its comparison pool. It tests the current target over the current ball horizon; it is a directional backtest, not a guarantee of future accuracy.")
+    if st.button("▶ Run Backtest", use_container_width=True):
+        with st.spinner("Testing historical situations..."):
+            bt = backtest_session_and_win(history, target_runs=target_runs, horizon_balls=remaining, sample_size=40, seed=42)
+        if bt is None:
+            st.warning("Not enough historical data for a backtest.")
+        else:
+            a,b,c,d=st.columns(4)
+            if bt["session_directional_accuracy"] is not None:
+                a.metric("Session direction accuracy", f"{bt['session_directional_accuracy']:.1f}%")
+            if bt["win_directional_accuracy"] is not None:
+                b.metric("WIN direction accuracy", f"{bt['win_directional_accuracy']:.1f}%")
+            c.metric("Test states", bt["states"])
+            if bt["session_avg_probability"] is not None:
+                d.metric("Avg session probability", f"{bt['session_avg_probability']:.1f}%")
+            if bt["win_avg_probability"] is not None:
+                st.write(f"Average historical WIN probability across tested states: **{bt['win_avg_probability']:.1f}%**")
+            st.info("Backtest accuracy is measured on a limited sample and can change with the sample. It is not an accuracy guarantee.")
+
 if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_ball<=current_ball)):
     st.subheader("🧠 VasuDev Analysis")
     st.markdown(f"**{batting}** vs **{bowling}**  •  **{venue}**  •  **{innings_label}**  •  **{match_format}**")
