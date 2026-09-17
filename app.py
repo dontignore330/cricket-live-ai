@@ -618,6 +618,150 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
 
     st.caption("Probabilities are calculated from historical data and validated methods. They are not guarantees; the final decision remains with the user.")
 
+    # ---------- ball-by-ball historical movement map ----------
+    # Optional observational layer: keep all existing WIN/SESSION calculations
+    # untouched and show how similar historical innings actually moved from the
+    # current state through every legal T20 checkpoint up to 20.0 overs.
+    def historical_movement_map(candidates, current_ball, current_runs, target_runs):
+        if candidates is None or candidates.empty:
+            return pd.DataFrame(), pd.DataFrame()
+
+        # One starting state per historical innings prevents one match from being
+        # counted multiple times when the similarity window contains adjacent balls.
+        base = candidates.copy()
+        base["distance"] = (base.ball_pos - current_ball).abs()
+        base = base.sort_values(["distance", "weight"], ascending=[True, False])
+        base = base.drop_duplicates(["match_id", "innings_no"], keep="first")
+        if base.empty:
+            return pd.DataFrame(), pd.DataFrame()
+
+        grouped = history.groupby(["match_id", "innings_no"], sort=False)
+        innings_rows = []
+        for _, start in base.iterrows():
+            try:
+                full = grouped.get_group((start.match_id, start.innings_no)).sort_values("ball_pos")
+            except KeyError:
+                continue
+            # Starting score is the historical score at the matched current state.
+            start_ball = int(start.ball_pos)
+            start_score = float(start.cum_runs)
+            future = full[full.ball_pos > start_ball]
+            if future.empty:
+                continue
+            innings_rows.append({
+                "match_id": start.match_id,
+                "innings_no": int(start.innings_no),
+                "start_score": start_score,
+                "weight": float(start.weight),
+                "future": future,
+            })
+
+        if not innings_rows:
+            return pd.DataFrame(), pd.DataFrame()
+
+        rows = []
+        for cp in range(max(1, current_ball + 1), 121):
+            scores, weights, added = [], [], []
+            reached_flags = []
+            for item in innings_rows:
+                f = item["future"]
+                at = f[f.ball_pos <= cp]
+                if at.empty:
+                    continue
+                last = at.iloc[-1]
+                score = float(last.cum_runs)
+                scores.append(score)
+                added.append(score - item["start_score"])
+                weights.append(item["weight"])
+                reached_flags.append(1.0 if score >= target_runs else 0.0)
+            if not scores or sum(weights) <= 0:
+                continue
+            w = np.asarray(weights, dtype=float)
+            sc = np.asarray(scores, dtype=float)
+            ad = np.asarray(added, dtype=float)
+            hit = np.asarray(reached_flags, dtype=float)
+            rows.append({
+                "checkpoint_ball": cp,
+                "checkpoint": over_ball_from_balls(cp),
+                "cases": len(scores),
+                "target_reached_pct": float(np.average(hit, weights=w) * 100),
+                "avg_score": float(np.average(sc, weights=w)),
+                "avg_added": float(np.average(ad, weights=w)),
+                "max_added": float(np.max(ad)),
+            })
+
+        movement = pd.DataFrame(rows)
+
+        # First time each similar historical innings actually reached the target.
+        timing_rows = []
+        for item in innings_rows:
+            f = item["future"]
+            hit_rows = f[(f.ball_pos > current_ball) & (f.ball_pos <= 120) & (f.cum_runs >= target_runs)]
+            if hit_rows.empty:
+                continue
+            first = hit_rows.iloc[0]
+            timing_rows.append({
+                "match_id": item["match_id"],
+                "innings_no": item["innings_no"],
+                "first_target_ball": int(first.ball_pos),
+                "first_target": over_ball_from_balls(int(first.ball_pos)),
+                "weight": item["weight"],
+            })
+        timing = pd.DataFrame(timing_rows)
+        return movement, timing
+
+    st.markdown("### 📊 Historical Movement — 0.1 to 20.0 Overs")
+    st.caption(
+        "Original historical delivery data from similar current situations. "
+        "Every legal ball after the current point is checked through 20.0 overs. "
+        "This shows what happened historically; it is not an entry recommendation."
+    )
+
+    movement, timing = historical_movement_map(cand, current_ball, current_runs, target_runs)
+    if movement.empty:
+        st.info("Not enough historical delivery data to build the ball-by-ball movement map.")
+    else:
+        first_col, second_col, third_col, fourth_col = st.columns(4)
+        first_col.metric("Historical Cases", f"{movement.iloc[0]['cases']:,}")
+        if not timing.empty:
+            first_target = timing.first_target_ball.min()
+            last_target = timing.first_target_ball.max()
+            second_col.metric("Earliest Target", over_ball_from_balls(first_target))
+            third_col.metric("Latest Target", over_ball_from_balls(last_target))
+            fourth_col.metric("Reached Target", f"{len(timing):,}/{len(movement.iloc[0]['cases']):,}")
+        else:
+            second_col.metric("Reached Target", "0")
+            third_col.metric("Earliest Target", "—")
+            fourth_col.metric("Latest Target", "—")
+
+        display_map = movement.copy()
+        display_map["Target reached by"] = display_map.target_reached_pct.map(lambda x: f"{x:.1f}%")
+        display_map["Avg score"] = display_map.avg_score.map(safe_round)
+        display_map["Avg runs added"] = display_map.avg_added.map(safe_round)
+        display_map["Max runs added"] = display_map.max_added.map(safe_round)
+        display_map = display_map[["checkpoint", "cases", "Target reached by", "Avg score", "Avg runs added", "Max runs added"]]
+        display_map.columns = ["Ball", "Historical Cases", "Target reached by", "Avg score", "Avg runs added", "Max runs added"]
+        st.dataframe(display_map, use_container_width=True, hide_index=True, height=620)
+
+        if not timing.empty:
+            timing_counts = timing.groupby("first_target_ball").weight.sum().sort_index()
+            timing_total = float(timing_counts.sum())
+            peak_ball = int(timing_counts.idxmax())
+            peak_pct = float(timing_counts.loc[peak_ball] / timing_total * 100) if timing_total else 0.0
+            st.write(
+                f"**Historical target-crossing timing:** the largest weighted concentration "
+                f"of first target crossings occurred at **{over_ball_from_balls(peak_ball)}** "
+                f"({peak_pct:.1f}% of historical target-reaching cases)."
+            )
+        else:
+            st.write("**Historical target-crossing timing:** no similar historical innings reached the selected target by 20.0 overs.")
+
+        st.caption(
+            f"League: {league} • Current: {current_runs}/{wickets} at {over_ball_from_balls(current_ball)} • "
+            f"Target: {target_runs} by {over_ball_from_balls(target_ball)}. "
+            "Each row is calculated from the original ball-by-ball history; no future result is invented."
+        )
+
     with st.expander("Details (optional)", expanded=False):
         st.write(f"**Current:** {current_runs}/{wickets} at {over_ball_from_balls(current_ball)} → **Future:** {over_ball_from_balls(target_ball)} → **Target:** {target_runs}")
         if session_samples:
