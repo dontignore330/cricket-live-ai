@@ -16,12 +16,12 @@ DB_PATHS = {
     "IPL": BASE_DIR / "cricket_history.db",
     "Men's Big Bash League": BASE_DIR / "bbl_history.db",
     "Women's Big Bash League": BASE_DIR / "wbbl_history.db",
-    "T20 Internationals": BASE_DIR / "t20i_history.db",  # नया
+    "T20 Internationals": BASE_DIR / "t20i_history.db",
 }
 DATA_URLS = {
     "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
     "Women's Big Bash League": "https://cricsheet.org/downloads/wbbl_json.zip",
-    "T20 Internationals": "https://cricsheet.org/downloads/t20is_json.zip",  # नया
+    "T20 Internationals": "https://cricsheet.org/downloads/t20is_json.zip",  # ← अगर ये 404 दे, तो नीचे वाला ऑप्शन ट्राई करें
 }
 
 st.set_page_config(page_title="VasuDev", page_icon="🏏", layout="wide")
@@ -145,7 +145,7 @@ def get_db_connection(db_path):
 
 st.title("🏏 VasuDev")
 st.caption("Cricket Historical & Situation Analyzer")
-league = st.selectbox("🏆 League", ["IPL", "Men's Big Bash League", "Women's Big Bash League", "T20 Internationals"], index=3)  # डिफॉल्ट T20I
+league = st.selectbox("🏆 League", ["IPL", "Men's Big Bash League", "Women's Big Bash League", "T20 Internationals"], index=3)
 
 try:
     selected_db, built_now = ensure_bigbash_db(league) if league != "IPL" else (DB_PATHS["IPL"], False)
