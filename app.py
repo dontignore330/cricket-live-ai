@@ -1,5 +1,5 @@
-# VasuDev V2 - complete app.py
-# Paste this whole file over your current app.py.
+# VasuDev V2 - final fixed app.py
+# Paste this whole file over your current app.py
 
 import os
 import hmac
@@ -98,7 +98,7 @@ if not st.session_state.vasudev_authenticated:
     st.markdown(
         """
         <div class="brand">
-            <div class="horse-logo">🐎</div>
+            <div class="horse-logo">♞</div>
             <div>
                 <div class="brand-name">VasuDev</div>
                 <div class="brand-subtitle">
@@ -229,6 +229,18 @@ st.markdown(
     [data-testid="stMetricValue"] {
         color: #ffffff;
     }
+
+    [data-testid="stStatusWidget"] {
+        display: none !important;
+    }
+
+    [data-testid="stDecoration"] {
+        display: none !important;
+    }
+
+    .block-container {
+        padding-top: 2.6rem !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -237,7 +249,7 @@ st.markdown(
 st.markdown(
     """
     <div class="brand">
-        <div class="horse-logo">🐎</div>
+        <div class="horse-logo">♞</div>
         <div>
             <div class="brand-name">VasuDev</div>
             <div class="brand-subtitle">
@@ -420,7 +432,6 @@ def ensure_bigbash_db(league):
 @st.cache_resource(show_spinner=False)
 def get_cached_db_connection(db_path_str):
     db_path = Path(db_path_str)
-
     if not db_path.exists():
         return None
 
@@ -462,7 +473,6 @@ def get_database_counts(db_path_str):
 @st.cache_data(show_spinner=False, max_entries=8)
 def load_history(selected_league, db_path_str):
     db_path = Path(db_path_str)
-
     if not db_path.exists():
         return pd.DataFrame()
 
@@ -620,7 +630,92 @@ def safe_round(x):
         return 0
 
 
+def calibrate_probability(probability, sample_count):
+    probability = float(np.clip(probability, 0.0, 100.0))
+    if sample_count < 20:
+        strength = 0.25
+    elif sample_count < 50:
+        strength = 0.45
+    elif sample_count < 100:
+        strength = 0.70
+    else:
+        strength = 1.0
+
+    calibrated = 50.0 + (probability - 50.0) * strength
+    return float(np.clip(calibrated, 1.0, 99.0))
+
+
+# ---------------- QUICK LIVE UPDATE STATE ----------------
+
+def initialize_live_state():
+    defaults = {
+        "live_initialized": False,
+        "live_runs": 0,
+        "live_wickets": 0,
+        "live_ball": 0,
+        "live_target": 0,
+        "live_history": [],
+        "live_last_action": "",
+    }
+
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def save_live_state():
+    st.session_state.live_history.append(
+        {
+            "runs": st.session_state.live_runs,
+            "wickets": st.session_state.live_wickets,
+            "ball": st.session_state.live_ball,
+            "action": st.session_state.live_last_action,
+        }
+    )
+
+
+def add_live_ball(runs=0, wicket=False, label=""):
+    if st.session_state.live_ball >= 120:
+        return
+
+    save_live_state()
+    st.session_state.live_runs += int(runs)
+
+    if wicket:
+        st.session_state.live_wickets = min(
+            10,
+            st.session_state.live_wickets + 1,
+        )
+
+    st.session_state.live_ball += 1
+    st.session_state.live_last_action = label
+
+
+def undo_live_ball():
+    history = st.session_state.live_history
+    if not history:
+        return
+
+    previous = history.pop()
+    st.session_state.live_runs = previous["runs"]
+    st.session_state.live_wickets = previous["wickets"]
+    st.session_state.live_ball = previous["ball"]
+    st.session_state.live_last_action = "Last ball undone"
+
+
+def reset_live_state():
+    st.session_state.live_initialized = False
+    st.session_state.live_runs = 0
+    st.session_state.live_wickets = 0
+    st.session_state.live_ball = 0
+    st.session_state.live_target = 0
+    st.session_state.live_history = []
+    st.session_state.live_last_action = ""
+
+
 # ---------------- APP ----------------
+
+initialize_live_state()
 
 league = st.selectbox("🏆 League", ["IPL", "Men's Big Bash League", "Women's Big Bash League"], index=0)
 
@@ -668,11 +763,183 @@ venues = get_values(
 if not teams:
     st.error(f"No teams were found for {league}.")
     st.stop()
-
 if not venues:
     venues = ["Unknown Ground"]
 
-# ---------------- UI ----------------
+# ---------------- LIVE MATCH INPUT ----------------
+
+st.subheader("📺 Live Match Input")
+
+st.caption(
+    "Pehli baar starting score set karo. Baad me har ball par sirf button dabao."
+)
+
+setup1, setup2, setup3, setup4 = st.columns(4)
+
+with setup1:
+    innings_label = st.selectbox("Innings", ["1st Innings", "2nd Innings"], key="setup_innings")
+
+with setup2:
+    setup_current_over = st.selectbox(
+        "Starting Over / Ball",
+        VALID_CURRENT_POINTS,
+        index=VALID_CURRENT_POINTS.index("3.1"),
+        key="setup_current_over",
+    )
+
+with setup3:
+    setup_current_runs = st.number_input(
+        "Starting Runs",
+        min_value=0,
+        max_value=400,
+        value=16,
+        step=1,
+        key="setup_current_runs",
+    )
+
+with setup4:
+    setup_wickets = st.number_input(
+        "Starting Wickets",
+        min_value=0,
+        max_value=10,
+        value=1,
+        step=1,
+        key="setup_wickets",
+    )
+
+if st.button("✅ Set Current Match Situation", use_container_width=True):
+    st.session_state.live_initialized = True
+    st.session_state.live_runs = int(setup_current_runs)
+    st.session_state.live_wickets = int(setup_wickets)
+    st.session_state.live_ball = balls_from_over_ball(setup_current_over)
+    st.session_state.live_history = []
+    st.session_state.live_last_action = "Starting situation set"
+    st.rerun()
+
+if st.session_state.live_initialized:
+    current_runs = st.session_state.live_runs
+    wickets = st.session_state.live_wickets
+    current_ball = st.session_state.live_ball
+    current_over = over_ball_from_balls(current_ball)
+else:
+    current_runs = int(setup_current_runs)
+    wickets = int(setup_wickets)
+    current_ball = balls_from_over_ball(setup_current_over)
+    current_over = over_ball_from_balls(current_ball)
+
+st.markdown(
+    f"""
+    <div class="card">
+        <h3>Current Live Score</h3>
+        <h2>{current_runs}/{wickets}</h2>
+        <p class="small">
+            Over/Ball: {current_over}
+            • Last action: {st.session_state.live_last_action or "—"}
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown("### ⚡ Last Ball Update")
+
+run1, run2, run3, run4 = st.columns(4)
+
+with run1:
+    if st.button("• Dot", use_container_width=True):
+        add_live_ball(0, False, "Dot ball")
+        st.rerun()
+
+with run2:
+    if st.button("1 Run", use_container_width=True):
+        add_live_ball(1, False, "1 run")
+        st.rerun()
+
+with run3:
+    if st.button("2 Runs", use_container_width=True):
+        add_live_ball(2, False, "2 runs")
+        st.rerun()
+
+with run4:
+    if st.button("3 Runs", use_container_width=True):
+        add_live_ball(3, False, "3 runs")
+        st.rerun()
+
+run5, run6, run7, run8 = st.columns(4)
+
+with run5:
+    if st.button("4 Runs", use_container_width=True):
+        add_live_ball(4, False, "4 runs")
+        st.rerun()
+
+with run6:
+    if st.button("6 Runs", use_container_width=True):
+        add_live_ball(6, False, "6 runs")
+        st.rerun()
+
+with run7:
+    if st.button("🔴 Wicket", use_container_width=True):
+        add_live_ball(0, True, "Wicket")
+        st.rerun()
+
+with run8:
+    if st.button("↩ Undo", use_container_width=True):
+        undo_live_ball()
+        st.rerun()
+
+extra1, extra2 = st.columns(2)
+
+with extra1:
+    if st.button("🔄 Reset Live Situation", use_container_width=True):
+        reset_live_state()
+        st.rerun()
+
+with extra2:
+    if st.button("✏️ Correct Score Manually", use_container_width=True):
+        st.session_state.show_manual_correction = True
+
+if st.session_state.get("show_manual_correction", False):
+    st.markdown("### ✏️ Manual Correction")
+
+    correction1, correction2, correction3 = st.columns(3)
+
+    with correction1:
+        corrected_runs = st.number_input(
+            "Correct Runs",
+            min_value=0,
+            max_value=400,
+            value=int(current_runs),
+            step=1,
+            key="corrected_runs",
+        )
+
+    with correction2:
+        corrected_wickets = st.number_input(
+            "Correct Wickets",
+            min_value=0,
+            max_value=10,
+            value=int(wickets),
+            step=1,
+            key="corrected_wickets",
+        )
+
+    with correction3:
+        corrected_over = st.selectbox(
+            "Correct Over / Ball",
+            VALID_CURRENT_POINTS,
+            index=min(len(VALID_CURRENT_POINTS) - 1, current_ball),
+            key="corrected_over",
+        )
+
+    if st.button("✅ Save Correction", use_container_width=True):
+        st.session_state.live_runs = int(corrected_runs)
+        st.session_state.live_wickets = int(corrected_wickets)
+        st.session_state.live_ball = balls_from_over_ball(corrected_over)
+        st.session_state.live_last_action = "Manual correction"
+        st.session_state.show_manual_correction = False
+        st.rerun()
+
+# ---------------- MATCH CONTEXT ----------------
 
 st.subheader("🏏 Current Match")
 c1, c2, c3 = st.columns(3)
@@ -699,29 +966,34 @@ with c2:
 with c3:
     venue = st.selectbox("Ground", venues, index=0)
 
-c4, c5, c6, c7 = st.columns(4)
-with c4:
-    innings_label = st.selectbox("Innings", ["1st Innings", "2nd Innings"])
-with c5:
-    current_over = st.selectbox("Current Over / Ball", VALID_CURRENT_POINTS, index=VALID_CURRENT_POINTS.index("3.1"))
-with c6:
-    current_runs = st.number_input("Current Runs", min_value=0, max_value=400, value=16, step=1)
-with c7:
-    wickets = st.number_input("Wickets", min_value=0, max_value=10, value=1, step=1)
+# ---------------- TARGET ----------------
 
 st.subheader("🎯 Target & Future Point")
 st.caption("Future Point = kis over/ball tak dekhna hai. Target Runs = us point tak total score kitna pahunchna hai.")
-c8, c9, c10 = st.columns(3)
-with c8:
-    future_over = st.selectbox("Future Ball / Over", VALID_FUTURE_POINTS, index=VALID_FUTURE_POINTS.index("7.1"))
-with c9:
-    target_runs = st.number_input("Target Runs", min_value=0, max_value=400, value=50, step=1)
-with c10:
-    match_format = st.selectbox("Match Format", ["T20"])
 
-current_ball = balls_from_over_ball(current_over)
-target_ball = balls_from_over_ball(future_over)
+target_col1, target_col2 = st.columns(2)
+
+with target_col1:
+    target_runs = st.number_input(
+        "Target Runs",
+        min_value=0,
+        max_value=400,
+        value=50,
+        step=1,
+        key="target_runs_input",
+    )
+
+with target_col2:
+    future_over = st.selectbox(
+        "Future Ball / Over",
+        VALID_FUTURE_POINTS,
+        index=VALID_FUTURE_POINTS.index("7.1"),
+        key="future_over_input",
+    )
+
+match_format = "T20"
 innings_no = 1 if innings_label == "1st Innings" else 2
+target_ball = balls_from_over_ball(future_over)
 remaining = max(0, target_ball - current_ball)
 current_rr_live = current_runs / current_ball * 6 if current_ball > 0 else 0.0
 required_runs_live = max(0, target_runs - current_runs)
@@ -764,20 +1036,17 @@ def estimate_live_trend():
         "momentum": float(x.momentum.mean()),
     }
 
-
 live = estimate_live_trend()
 
 # ---------------- PHASE AWARE ----------------
 
 def match_phase(ball_pos):
     ball_pos = int(ball_pos)
-
     if ball_pos <= 36:
         return "powerplay"
     if ball_pos <= 90:
         return "middle"
     return "death"
-
 
 # ---------------- HISTORY SIMILARITY ----------------
 
@@ -789,12 +1058,7 @@ def session_candidates():
 
     x = history[
         (history.innings_no == innings_no)
-        & (
-            history.ball_pos.between(
-                max(1, current_ball - 2),
-                current_ball + 2,
-            )
-        )
+        & (history.ball_pos.between(max(1, current_ball - 2), current_ball + 2))
     ].copy()
 
     if x.empty:
@@ -847,11 +1111,7 @@ def session_candidates():
     )
 
     x["weight"] = x["similarity"].clip(lower=0.03)
-
-    return (
-        x.sort_values("weight", ascending=False).head(1500),
-        "Phase-aware V2: score + wickets + RR + required RR + recent trend + momentum + teams + ground",
-    )
+    return x.sort_values("weight", ascending=False).head(1500), "Phase-aware V2: score + wickets + RR + required RR + recent trend + momentum + teams + ground"
 
 
 def add_future_scores(candidates):
@@ -896,12 +1156,7 @@ def win_candidates():
 
     x = history[
         (history.innings_no == innings_no)
-        & (
-            history.ball_pos.between(
-                max(1, current_ball - 2),
-                current_ball + 2,
-            )
-        )
+        & (history.ball_pos.between(max(1, current_ball - 2), current_ball + 2))
     ].copy()
 
     if x.empty:
@@ -1097,10 +1352,9 @@ with st.expander("🧪 VasuDev Historical Validation (advanced)", expanded=False
 
             st.info("Validation is measurement only. It does not force the model toward 80% or any other number.")
 
-
 # ---------------- FINAL ANALYZE ----------------
 
-if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_ball <= current_ball)):
+if st.button("🔎 ANALYZE CURRENT SITUATION", use_container_width=True, disabled=(target_ball <= current_ball)):
     win_df = win_candidates()
     win_pct = loss_pct = other_pct = 0.0
     win_samples = 0
@@ -1116,9 +1370,13 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
         total = ww + lw + ow
 
         if total > 0:
-            win_pct = 100 * ww / total
-            loss_pct = 100 * lw / total
-            other_pct = 100 * ow / total
+            raw_win = 100 * ww / total
+            raw_loss = 100 * lw / total
+            raw_other = 100 * ow / total
+
+            win_pct = calibrate_probability(raw_win, win_samples if win_samples > 0 else 1)
+            loss_pct = calibrate_probability(raw_loss, win_samples if win_samples > 0 else 1)
+            other_pct = calibrate_probability(raw_other, win_samples if win_samples > 0 else 1)
         win_samples = len(win_df)
 
     cand, method = session_candidates()
@@ -1131,9 +1389,10 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
 
     if not cand.empty:
         cand["hit"] = (cand.future_score >= target_runs).astype(float)
-        session_yes = 100 * float(np.average(cand.hit.to_numpy(), weights=cand.weight.to_numpy()))
-        session_no = 100 - session_yes
+        raw_yes = 100 * float(np.average(cand.hit.to_numpy(), weights=cand.weight.to_numpy()))
         session_samples = len(cand)
+        session_yes = calibrate_probability(raw_yes, session_samples)
+        session_no = 100.0 - session_yes
         expected_score = float(np.average(cand.future_score, weights=cand.weight))
         range_low = float(cand.future_score.quantile(0.10))
         range_high = float(cand.future_score.quantile(0.90))
