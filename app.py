@@ -1,4 +1,4 @@
-# VasuDev V2 - Final complete, corrected app.py
+# VasuDev V2 - final clean code
 # Paste this whole file over your current app.py
 
 import os
@@ -49,17 +49,15 @@ st.set_page_config(
 APP_PASSWORD = os.environ.get("VASUDEV_PASSWORD", "").strip()
 
 if not APP_PASSWORD:
-    st.error(
-        "🔒 VasuDev is locked. Set the VASUDEV_PASSWORD secret in Render."
-    )
+    st.error("🔒 VasuDev is locked. Set the VASUDEV_PASSWORD secret in Render.")
     st.stop()
 
 if "vasudev_authenticated" not in st.session_state:
-    st.session_state.vasudev_authenticated = False
+    st.session_state["vasudev_authenticated"] = False
 
 
 # ============================================================
-# BRAND / CSS
+# STYLES + HEADER
 # ============================================================
 
 def render_brand():
@@ -113,13 +111,13 @@ def render_brand():
             color: #ffffff !important;
             font-size: 2.35rem;
             font-weight: 900;
-            letter-spacing: .5px;
+            letter-spacing: 0.5px;
             line-height: 1;
         }
 
         .vasudev-subtitle {
             color: #b9cfe9 !important;
-            font-size: .92rem;
+            font-size: 0.92rem;
             margin-top: 8px;
         }
 
@@ -247,7 +245,7 @@ def render_brand():
             <div>
                 <div class="vasudev-title">VasuDev</div>
                 <div class="vasudev-subtitle">
-                    Cricket Historical & Situation Analyzer
+                    Cricket Historical &amp; Situation Analyzer
                 </div>
             </div>
         </div>
@@ -256,20 +254,36 @@ def render_brand():
     )
 
 
-if not st.session_state.vasudev_authenticated:
+# ============================================================
+# AUTH GATE
+# ============================================================
+
+if not st.session_state["vasudev_authenticated"]:
     render_brand()
 
     st.title("🔒 VasuDev Private Access")
     st.caption("Enter the private password to open the cricket analysis app.")
 
-    password = st.text_input("Password", type="password")
+    password_input = st.text_input(
+        "Password",
+        type="password",
+        key="login_password",
+    )
 
-    if st.button("🔓 Unlock", use_container_width=True):
-        if hmac.compare_digest(password, APP_PASSWORD):
-            st.session_state.vasudev_authenticated = True
+    unlock_clicked = st.button(
+        "🔓 Unlock",
+        use_container_width=True,
+        key="unlock_button",
+    )
+
+    if unlock_clicked:
+        if hmac.compare_digest(password_input, APP_PASSWORD):
+            st.session_state["vasudev_authenticated"] = True
+            st.session_state.pop("login_password", None)
             st.rerun()
         else:
             st.error("Incorrect password.")
+
     st.stop()
 
 render_brand()
@@ -284,9 +298,12 @@ def parse_delivery(value, over_no):
         left, right = str(value).strip().split(".", 1)
         over = int(left)
         ball = int(right)
+
         if over < 0 or ball <= 0:
             raise ValueError
+
         return over * 6 + ball, f"{over}.{ball}"
+
     except Exception:
         return None, None
 
@@ -294,10 +311,7 @@ def parse_delivery(value, over_no):
 def build_database(db_path, league, zip_path):
     tmp_db = db_path.with_suffix(db_path.suffix + ".tmp")
     if tmp_db.exists():
-        try:
-            tmp_db.unlink()
-        except Exception:
-            pass
+        tmp_db.unlink()
 
     out = sqlite3.connect(str(tmp_db))
 
@@ -346,6 +360,7 @@ def build_database(db_path, league, zip_path):
                         continue
 
                     outcome = info.get("outcome", {}) or {}
+
                     winner = (
                         outcome.get("winner", "")
                         or outcome.get("eliminator", "")
@@ -459,6 +474,7 @@ def ensure_bigbash_db(league):
 @st.cache_resource(show_spinner=False)
 def get_db_connection(db_path_string):
     db_path = Path(db_path_string)
+
     if not db_path.exists():
         return None
 
@@ -479,6 +495,7 @@ def get_db_connection(db_path_string):
 @st.cache_data(show_spinner=False)
 def get_database_counts(db_path_string):
     db_path = Path(db_path_string)
+
     with closing(
         sqlite3.connect(
             f"file:{db_path.resolve()}?mode=ro",
@@ -535,7 +552,6 @@ def load_history(league, db_path_string):
             over_text, ball_text = str(value).split(".", 1)
             over = int(over_text)
             ball = int(ball_text)
-
             if over < 0 or ball < 0:
                 raise ValueError
             return over * 6 + ball
@@ -611,7 +627,7 @@ def get_values(sql, params, connection):
 
 
 # ============================================================
-# HELPERS
+# BALL HELPERS
 # ============================================================
 
 def balls_from_over_ball(value):
@@ -812,7 +828,6 @@ def historical_session_line(history_df, innings_no, current_ball, current_runs, 
         }
 
     trend = calculate_live_trend(history_df, innings_no, current_ball, current_runs, wickets)
-
     phase = match_phase(current_ball)
 
     candidates = history_df[
@@ -924,6 +939,7 @@ def historical_session_line(history_df, innings_no, current_ball, current_runs, 
 def initialize_session_state():
     defaults = {
         "session_over": 6,
+        "match_target": 0,
         "session_low": 0,
         "session_high": 0,
         "session_expected": 0.0,
@@ -1069,13 +1085,24 @@ with st.sidebar:
         "Session Over",
         min_value=1,
         max_value=20,
-        value=6,
+        value=int(st.session_state.get("session_over", 6)),
         step=1,
+        key="session_over_input",
     )
 
-    setup_current_over = st.selectbox("Start Over / Ball", VALID_POINTS, index=VALID_POINTS.index("3.1"))
-    setup_current_runs = st.number_input("Start Runs", min_value=0, max_value=400, value=16, step=1)
-    setup_wickets = st.number_input("Start Wickets", min_value=0, max_value=10, value=1, step=1)
+    st.session_state.match_target = st.number_input(
+        "Target Runs",
+        min_value=0,
+        max_value=400,
+        value=int(st.session_state.get("match_target", 0)),
+        step=1,
+        key="match_target_input",
+    )
+
+    st.caption(
+        "Session Over aur Target Runs alag cheezen hain. "
+        "Session line selected session ke expected score ko dikhati hai."
+    )
 
     if st.button("✅ Set Current Match Situation", use_container_width=True):
         st.session_state.live_initialized = True
@@ -1089,7 +1116,11 @@ with st.sidebar:
         reset_live_state()
         st.rerun()
 
-# If no live state yet, set default values
+    setup_current_over = st.selectbox("Start Over / Ball", VALID_POINTS, index=VALID_POINTS.index("3.1"))
+    setup_current_runs = st.number_input("Start Runs", min_value=0, max_value=400, value=16, step=1)
+    setup_wickets = st.number_input("Start Wickets", min_value=0, max_value=10, value=1, step=1)
+
+# Value initialization
 if not st.session_state.live_initialized:
     st.session_state.live_runs = 16
     st.session_state.live_wickets = 1
@@ -1102,7 +1133,6 @@ current_ball = int(st.session_state.live_ball)
 current_over = over_ball_from_balls(current_ball)
 innings_no = 1 if innings_label == "1st Innings" else 2
 
-# Keep session line auto generated when not manual
 if not st.session_state.manual_session_mode:
     refresh_session_line_for_current_state(
         current_score=current_runs,
@@ -1115,7 +1145,7 @@ if not st.session_state.manual_session_mode:
         session_over_value=int(st.session_state.session_over),
     )
 
-# Current live score card
+# Current score card
 st.markdown(
     f"""
     <div class="card">
@@ -1123,6 +1153,7 @@ st.markdown(
         <h2>{current_runs}/{wickets}</h2>
         <p class="small">
             Over/Ball: {current_over}
+            • Target: {st.session_state.match_target or "Not set"}
             • Session over: {st.session_state.session_over}
             • Last action: {st.session_state.live_last_action or "—"}
         </p>
@@ -1131,7 +1162,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Quick ball buttons
+# Buttons
 st.markdown("### ⚡ Ball-by-Ball Update")
 
 button_row1, button_row2, button_row3, button_row4 = st.columns(4)
@@ -1258,7 +1289,8 @@ with button_row8:
         )
         st.rerun()
 
-# Match details row
+
+# Match detail cards
 st.subheader("📊 Match Detail")
 
 detail1, detail2, detail3, detail4 = st.columns(4)
@@ -1271,7 +1303,7 @@ with detail3:
 with detail4:
     st.markdown(f"<div class='card'><strong>Innings</strong><br>{innings_label}</div>", unsafe_allow_html=True)
 
-# Session display
+# Session box
 session_low = int(st.session_state.get("session_low", 0))
 session_high = int(st.session_state.get("session_high", 0))
 session_expected = float(st.session_state.get("session_expected", 0.0))
@@ -1284,7 +1316,8 @@ st.markdown(
         <p class="small">
             Expected score: {session_expected:.1f}
             • Session over: {st.session_state.session_over}
-            • Mode: {('Manual' if st.session_state.manual_session_mode else 'Auto')}
+            • Target: {st.session_state.match_target or "Not set"}
+            • Mode: {'Manual' if st.session_state.manual_session_mode else 'Auto'}
             • Note: {st.session_state.session_note}
         </p>
     </div>
@@ -1292,7 +1325,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Manual override block
+# Manual session override
 manual_col1, manual_col2, manual_col3 = st.columns(3)
 
 with manual_col1:
@@ -1343,32 +1376,12 @@ with manual_action2:
 # ANALYSIS MODEL
 # ============================================================
 
-current_rr_live = current_runs / current_ball * 6 if current_ball > 0 else 0.0
-target_runs = int(st.session_state.session_high)
-
-# For the session engine, we do not need separate future point or target.
-# Session over itself acts as target window.
-
-trend_data = calculate_live_trend(
-    history_df=history,
-    innings_no=innings_no,
-    current_ball=current_ball,
-    current_runs=current_runs,
-    wickets=wickets,
-)
-
-def match_phase(ball_position):
-    if ball_position <= 36:
-        return "powerplay"
-    if ball_position <= 90:
-        return "middle"
-    return "death"
-
-
 def session_candidates():
     if history.empty:
         return pd.DataFrame(), "No usable historical data"
 
+    session_over_value = int(st.session_state.session_over)
+    session_total_balls = session_over_value * 6
     current_phase = match_phase(current_ball)
 
     x = history[
@@ -1382,34 +1395,44 @@ def session_candidates():
     x["phase"] = x["ball_pos"].map(match_phase)
     x["phase_match"] = (x["phase"] == current_phase).astype(float)
 
-    x = x[x["ball_pos"] < (int(st.session_state.session_over) * 6)]
+    x = x[x["ball_pos"] < session_total_balls]
     x = x[(x["cum_runs"] - current_runs).abs() <= 30]
     x = x[(x["cum_wk"] - wickets).abs() <= 3]
 
     if x.empty:
         return pd.DataFrame(), "No similar historical states"
 
-    target_turn = int(st.session_state.session_high)
-    target_runs_local = max(target_turn, current_runs)
+    current_rr_value = current_runs / max(1, current_ball) * 6.0
+    match_target_value = int(st.session_state.get("match_target", 0))
+    session_target_value = int(st.session_state.get("session_high", current_runs))
+    target_value = max(match_target_value, session_target_value, current_runs)
 
     live_required_rr = (
-        max(0, target_runs_local - current_runs)
-        / max(1, (int(st.session_state.session_over) * 6) - current_ball)
+        max(0, target_value - current_runs)
+        / max(1, session_total_balls - current_ball)
         * 6.0
     )
 
-    x["required_runs"] = (target_runs_local - x["cum_runs"]).clip(lower=0)
-    x["remaining_balls"] = ((int(st.session_state.session_over) * 6) - x["ball_pos"]).clip(lower=1)
+    trend = calculate_live_trend(
+        history,
+        innings_no=innings_no,
+        current_ball=current_ball,
+        current_runs=current_runs,
+        wickets=wickets,
+    )
+
+    x["required_runs"] = (target_value - x["cum_runs"]).clip(lower=0)
+    x["remaining_balls"] = (session_total_balls - x["ball_pos"]).clip(lower=1)
     x["required_rr"] = x["required_runs"] / x["remaining_balls"] * 6.0
 
     x["s_score"] = np.exp(-((x["cum_runs"] - current_runs).abs()) / 10.0)
     x["s_wickets"] = np.exp(-((x["cum_wk"] - wickets).abs()) / 1.5)
     x["s_ball"] = np.exp(-((x["ball_pos"] - current_ball).abs()) / 2.5)
-    x["s_rr"] = np.exp(-((x["current_rr"] - current_rr_live).abs()) / 1.8)
+    x["s_rr"] = np.exp(-((x["current_rr"] - current_rr_value).abs()) / 1.8)
     x["s_required_rr"] = np.exp(-((x["required_rr"] - live_required_rr).abs()) / 2.2)
-    x["s_last6"] = np.exp(-((x["runs_last6"] - trend_data["runs_last6"]).abs()) / 7.0)
-    x["s_last12"] = np.exp(-((x["runs_last12"] - trend_data["runs_last12"]).abs()) / 10.0)
-    x["s_momentum"] = np.exp(-((x["momentum"] - trend_data["momentum"]).abs()) / 2.5)
+    x["s_last6"] = np.exp(-((x["runs_last6"] - trend["runs_last6"]).abs()) / 7.0)
+    x["s_last12"] = np.exp(-((x["runs_last12"] - trend["runs_last12"]).abs()) / 10.0)
+    x["s_momentum"] = np.exp(-((x["momentum"] - trend["momentum"]).abs()) / 2.5)
 
     x["team_match"] = (
         (x["batting_team"] == batting).astype(float)
@@ -1443,6 +1466,7 @@ def add_future_scores(candidates):
         return candidates
 
     session_total = int(st.session_state.session_over) * 6
+
     future_scores = (
         history.loc[
             history["ball_pos"] <= session_total,
@@ -1540,7 +1564,7 @@ def reliability(n):
 
 
 # ============================================================
-# FINAL ANALYSIS
+# FINAL ANALYZE
 # ============================================================
 
 if st.button("🔎 ANALYZE CURRENT SITUATION", use_container_width=True):
