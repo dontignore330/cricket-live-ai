@@ -16,12 +16,10 @@ DB_PATHS = {
     "IPL": BASE_DIR / "cricket_history.db",
     "Men's Big Bash League": BASE_DIR / "bbl_history.db",
     "Women's Big Bash League": BASE_DIR / "wbbl_history.db",
-    "T20 Internationals": BASE_DIR / "t20i_history.db",
 }
 DATA_URLS = {
     "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
     "Women's Big Bash League": "https://cricsheet.org/downloads/wbbl_json.zip",
-    "T20 Internationals": "https://cricsheet.org/downloads/t20is_json.zip",  # ← अगर ये 404 दे, तो नीचे वाला ऑप्शन ट्राई करें
 }
 
 st.set_page_config(page_title="VasuDev", page_icon="🏏", layout="wide")
@@ -145,7 +143,7 @@ def get_db_connection(db_path):
 
 st.title("🏏 VasuDev")
 st.caption("Cricket Historical & Situation Analyzer")
-league = st.selectbox("🏆 League", ["IPL", "Men's Big Bash League", "Women's Big Bash League", "T20 Internationals"], index=3)
+league = st.selectbox("🏆 League", ["IPL", "Men's Big Bash League", "Women's Big Bash League"], index=0)
 
 try:
     selected_db, built_now = ensure_bigbash_db(league) if league != "IPL" else (DB_PATHS["IPL"], False)
@@ -178,6 +176,8 @@ def get_values(sql, params=()):
         return []
 
 def balls_from_over_ball(value):
+    # Cricket over.ball is NOT decimal math: each over has exactly 6 legal balls.
+    # We accept whole-over states (e.g. 3.0) and legal balls 1-6 only.
     text = str(value).strip()
     try:
         whole_s, ball_s = text.split(".", 1)
@@ -192,6 +192,8 @@ def balls_from_over_ball(value):
     return whole * 6 + ball
 
 def over_ball_from_balls(balls):
+    # Internal ball count is one-based within each over: 4.6 is ball 30,
+    # and the next legal delivery is 5.1 (ball 31).
     balls = int(balls)
     if balls <= 0:
         return "0.0"
@@ -200,6 +202,8 @@ def over_ball_from_balls(balls):
     return f"{over}.{ball}"
 
 def valid_over_ball_options(max_over=20):
+    # Offer only legal delivery positions. 0.0 means before the first ball.
+    # After 4.6 the next option is 5.1 — never 4.7, 4.8, etc.
     options = ["0.0"]
     for over in range(max_over):
         options.extend(f"{over}.{ball}" for ball in range(1, 7))
@@ -228,6 +232,10 @@ def load_history(selected_league):
     df = pd.read_sql_query(q, conn, params=(selected_league,))
     if df.empty:
         return df
+    # Historical files can contain illegal-delivery labels such as 4.7 or 4.10.
+    # Those labels are valid as historical sequence markers even though they must
+    # never be accepted from the user's live input. Keep strict validation for UI
+    # input, but parse historical labels without crashing.
     def historical_ball_position(value):
         text = str(value).strip()
         try:
@@ -263,21 +271,18 @@ if not teams:
 if not venues:
     venues = ["Unknown Ground"]
 
-# T20I के लिए डिफॉल्ट टीम्स सेट करें
-if league == "T20 Internationals":
-    preferred_bat = "India"
-    preferred_bowl = "Australia"
-else:
-    preferred_bat = {"IPL": "Sunrisers Hyderabad", "Men's Big Bash League": "Melbourne Stars", "Women's Big Bash League": "Sydney Sixers"}.get(league)
-    preferred_bowl = {"IPL": "Rajasthan Royals", "Men's Big Bash League": "Sydney Sixers", "Women's Big Bash League": "Sydney Thunder"}.get(league)
+
+
 
 st.subheader("🏏 Current Match")
 c1,c2,c3 = st.columns(3)
 with c1:
+    preferred_bat = {"IPL": "Sunrisers Hyderabad", "Men's Big Bash League": "Melbourne Stars", "Women's Big Bash League": "Sydney Sixers"}.get(league)
     default_bat = preferred_bat if preferred_bat in teams else teams[0]
     batting = st.selectbox("Batting Team", teams, index=teams.index(default_bat))
 with c2:
     bowling_options = [x for x in teams if x != batting]
+    preferred_bowl = {"IPL": "Rajasthan Royals", "Men's Big Bash League": "Sydney Sixers", "Women's Big Bash League": "Sydney Thunder"}.get(league)
     default_bowl = preferred_bowl if preferred_bowl in bowling_options else bowling_options[0]
     bowling = st.selectbox("Bowling Team", bowling_options, index=bowling_options.index(default_bowl))
 with c3:
@@ -315,16 +320,20 @@ def similarity_candidates(batting, bowling, venue, innings_no, current_ball, cur
     if history.empty or target_ball <= current_ball:
         return pd.DataFrame(), "No usable historical data"
 
+    # Only compare situations that have enough future deliveries to reach the requested point.
     cur = history[(history.innings_no == innings_no) & (history.ball_pos == current_ball)].copy()
     if cur.empty:
+        # A small ball-position window prevents sparse exact-ball positions from killing the result.
         cur = history[(history.innings_no == innings_no) & (history.ball_pos.between(max(1,current_ball-1), current_ball+1))].copy()
     if cur.empty:
         return pd.DataFrame(), "No historical state near this ball"
 
+    # Never use a state from after the target point.
     cur = cur[cur.ball_pos < target_ball]
     if cur.empty:
         return pd.DataFrame(), "No historical state before target point"
 
+    # Score/wicket neighborhood first; then progressively broaden.
     tolerances = [(2,0),(4,1),(7,1),(12,2),(20,3),(999,10)]
     selected = pd.DataFrame()
     used = ""
@@ -342,12 +351,15 @@ def similarity_candidates(batting, bowling, venue, innings_no, current_ball, cur
     if selected.empty:
         return pd.DataFrame(), "No similar historical states"
 
+    # Team/ground match strength. This is intentionally a weighting, not an all-or-nothing filter.
     selected["team_score"] = (selected.batting_team == batting).astype(float) * 1.0 + (selected.bowling_team == bowling).astype(float) * 0.8
     selected["ground_score"] = (selected.venue == venue).astype(float) * 1.0
     selected["ball_score"] = np.exp(-((selected.ball_pos-current_ball).abs())/2.5)
     selected["score_score"] = np.exp(-((selected.cum_runs-current_runs).abs())/7.0)
     selected["wk_score"] = np.exp(-((selected.cum_wk-wickets).abs())/1.2)
     selected["similarity"] = (0.28*selected["score_score"] + 0.18*selected["wk_score"] + 0.18*selected["ball_score"] + 0.18*selected["ground_score"] + 0.18*(selected["team_score"]/1.8))
+
+    # Stronger exact team/ground states get more influence, but broad IPL states remain available.
     selected["weight"] = selected["similarity"].clip(lower=0.05)
     return selected, used
 
@@ -355,6 +367,7 @@ def add_future_scores(candidates, target_ball):
     if candidates.empty:
         return candidates
     future_rows=[]
+    # Candidate rows are only a few thousand at most; find first delivery at/after target in each innings.
     grouped = history.groupby(["match_id","innings_no"], sort=False)
     for idx,row in candidates.iterrows():
         key=(row.match_id,row.innings_no)
@@ -365,6 +378,7 @@ def add_future_scores(candidates, target_ball):
         f=g[g.ball_pos <= target_ball]
         if f.empty:
             continue
+        # Prefer the state exactly at target; if no legal delivery exists, use the last score at/before it.
         fr=f.iloc[-1]
         r=row.to_dict()
         r["future_score"]=float(fr.cum_runs)
@@ -396,9 +410,12 @@ def historical_win_similarity(batting, bowling, venue, innings_no, current_ball,
 
 
 def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sample_size=100, seed=42):
+    """Time-safe historical backtest: each test state excludes its own match."""
     if history_df.empty:
         return None
     h = history_df.copy()
+    # Keep states that have a meaningful future horizon. We test a fixed 24-ball session
+    # because it is a common, simple benchmark and avoids cherry-picking a target.
     candidates = h[h.ball_pos <= 96].copy()
     if candidates.empty:
         return None
@@ -420,6 +437,7 @@ def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sampl
         match_id = keyrow.match_id
         innings_no_bt = int(keyrow.innings_no)
         own = grouped.get_group((match_id, innings_no_bt))
+        # Choose a real historical state, avoiding the very first few balls.
         usable = own[(own.ball_pos >= 12) & (own.ball_pos <= 96)].copy()
         if usable.empty:
             continue
@@ -427,12 +445,16 @@ def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sampl
         current_ball_bt = int(state.ball_pos)
         target_ball_bt = current_ball_bt + int(horizon_balls)
 
+        # Actual session outcome at/before the same fixed horizon.
         future = own[own.ball_pos <= target_ball_bt]
         if future.empty:
             continue
         actual_future_score = float(future.iloc[-1].cum_runs)
+        # Use the same target for every test state. This avoids the invalid
+        # practice of defining the target from the already-known future outcome.
         target_bt = float(target_runs)
 
+        # Exclude the current match entirely to prevent leakage.
         pool = h[(h.innings_no == innings_no_bt) & (h.match_id != match_id)].copy()
         if pool.empty:
             continue
@@ -450,11 +472,14 @@ def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sampl
         pool["similarity"] = (0.28*pool.score_score + 0.18*pool.wk_score + 0.18*pool.ball_score + 0.18*pool.ground_score + 0.18*(pool.team_score/1.8))
         pool["weight"] = pool.similarity.clip(lower=0.05)
 
+        # Session probability: historical probability of reaching the fixed target
+        # by the same horizon. The test match itself is excluded from the pool.
         future_rows=[]
         for (mid, inn), g in pool.groupby(["match_id","innings_no"], sort=False):
             f=g[g.ball_pos <= target_ball_bt]
             if f.empty:
                 continue
+            # g only contains states near current ball; retrieve the full innings.
             try:
                 full = grouped.get_group((mid, inn))
             except KeyError:
@@ -462,6 +487,8 @@ def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sampl
             ff=full[full.ball_pos <= target_ball_bt]
             if ff.empty:
                 continue
+            first=g.iloc[0]
+            # Use the closest current state from this historical innings.
             idx=(g.ball_pos-current_ball_bt).abs().idxmin()
             first=g.loc[idx]
             actual=float(ff.iloc[-1].cum_runs-first.cum_runs)
@@ -470,11 +497,13 @@ def backtest_session_and_win(history_df, target_runs=50, horizon_balls=24, sampl
             continue
         fr=pd.DataFrame(future_rows, columns=["match_id","innings_no","future_score","weight"])
         session_prob=100*float(np.average((fr.future_score >= target_bt).astype(float), weights=fr.weight))
+        # Actual event in the held-out match.
         actual_session = 1.0 if actual_future_score >= target_bt else 0.0
         session_hits.append(1.0 if (session_prob >= 50) == bool(actual_session) else 0.0)
         session_probs.append(session_prob)
         session_actuals.append(actual_session)
 
+        # Win probability: same-match outcome is held out from the candidate pool.
         pool["won_flag"]=(pool.winner==pool.batting_team).astype(float)
         valid=pool[pool.winner.str.strip() != ""]
         if not valid.empty and valid.weight.sum()>0:
@@ -526,6 +555,8 @@ with st.expander("🧪 VasuDev Historical Validation (advanced)", expanded=False
                 st.write(f"WIN Brier score: **{np.mean((probs-actuals)**2):.4f}** (lower is better)")
 
 if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_ball<=current_ball)):
+    # Final user-facing output is intentionally compact. Detailed calculations
+    # remain available in the optional Details expander.
     win_df=historical_win_similarity(batting,bowling,venue,innings_no,current_ball,current_runs,wickets)
     win_pct=loss_pct=other_pct=0.0
     win_samples=0
@@ -594,5 +625,4 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
             st.write(f"Expected score at future point: **{safe_round(expected_score)}** • Historical 10–90% range: **{safe_round(range_low)}–{safe_round(range_high)}**")
             st.caption(f"Similarity: {method}. Team, ground, score, wickets and ball position are weighted; broader {league} data is used when exact situations are sparse.")
         if win_samples:
-            st.write(f"WIN: **{win_pct:.1f}%** • LOSS: **{loss_pct:.1f}%** • Other/Tie: **{other_pct:.1f}%**")
-        st.write("VasuDev does not manually increase a probability to make it look better. Advanced validation/backtesting is kept separate from the live result.")
+            st.write(f"WIN:
