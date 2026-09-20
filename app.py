@@ -1,6 +1,4 @@
-# VasuDev V3 - transition-based historical analyzer
-# Complete app.py. Replace the current app.py with this file.
-# V3 keeps the percentages historical/empirical; it does not manually inflate them.
+# VasuDev V2 - complete app.py
 # Paste this whole file over your current app.py.
 
 import sqlite3
@@ -18,8 +16,8 @@ import streamlit as st
 BASE_DIR = Path(".")
 DB_PATHS = {
     "IPL": BASE_DIR / "cricket_history.db",
-    "Men's Big Bash League": BASE_DIR / "bbl_history_v3.db",
-    "Women's Big Bash League": BASE_DIR / "wbbl_history_v3.db",
+    "Men's Big Bash League": BASE_DIR / "bbl_history.db",
+    "Women's Big Bash League": BASE_DIR / "wbbl_history.db",
 }
 DATA_URLS = {
     "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
@@ -205,8 +203,6 @@ def over_ball_from_balls(balls):
     balls = int(balls)
     if balls <= 0:
         return "0.0"
-    if balls >= 120:
-        return "20.0"
     over = (balls - 1) // 6
     ball = ((balls - 1) % 6) + 1
     return f"{over}.{ball}"
@@ -215,7 +211,6 @@ def valid_over_ball_options(max_over=20):
     options = ["0.0"]
     for over in range(max_over):
         options.extend(f"{over}.{ball}" for ball in range(1, 7))
-    options.append("20.0")
     return options
 
 VALID_CURRENT_POINTS = valid_over_ball_options(20)
@@ -371,26 +366,12 @@ def estimate_live_trend():
 
 live = estimate_live_trend()
 
-# ---------------- V3 TRANSITION ENGINE ----------------
-# Core idea:
-# Do not ask only "what happened in similar states?".
-# Ask "from similar historical states, how often did the innings actually
-# reach THIS future target at THIS future point?".
-# This directly models transitions such as 15/1 at 3.0 -> 35 at 6.0.
+# ---------------- SESSION V2 ----------------
 
-def _historical_state_at(g, ball_target):
-    """Return the last recorded delivery at or before ball_target."""
-    f = g[g.ball_pos <= int(ball_target)]
-    if f.empty:
-        return None
-    return f.iloc[-1]
-
-
-def transition_candidates():
+def session_candidates():
     if history.empty or target_ball <= current_ball:
-        return pd.DataFrame(), "No usable historical transition data"
+        return pd.DataFrame(), "No usable historical data"
 
-    # Start with states very close to the live point.
     x = history[
         (history.innings_no == innings_no) &
         (history.ball_pos.between(max(1, current_ball - 1), current_ball + 1))
@@ -398,88 +379,59 @@ def transition_candidates():
     if x.empty:
         return pd.DataFrame(), "No historical state near this ball"
 
-    x = x[(x.cum_runs - current_runs).abs() <= 22]
+    x = x[x.ball_pos < target_ball]
+    x = x[(x.cum_runs - current_runs).abs() <= 25]
     x = x[(x.cum_wk - wickets).abs() <= 3]
     if x.empty:
         return pd.DataFrame(), "No similar historical states"
 
-    # One candidate per historical match/innings. This prevents a single match
-    # from being counted dozens of times and dominating the probability.
-    x = x.sort_values(["match_id", "innings_no", "ball_pos"])
-    x = x.assign(state_distance=(x.ball_pos-current_ball).abs() +
-                  (x.cum_runs-current_runs).abs()*0.20 +
-                  (x.cum_wk-wickets).abs()*1.5)
-    x = x.sort_values("state_distance").groupby(["match_id", "innings_no"], sort=False).head(1).copy()
-
-    # Live required scoring for the requested transition.
-    live_required_rr = required_runs_live / max(1, target_ball-current_ball) * 6
+    live_required_rr = required_runs_live / max(1, target_ball - current_ball) * 6
 
     x["required_runs"] = (target_runs - x.cum_runs).clip(lower=0)
     x["remaining_balls"] = (target_ball - x.ball_pos).clip(lower=1)
     x["required_rr"] = x.required_runs / x.remaining_balls * 6
 
-    # Similarity is deliberately interpretable. The final YES/NO is then based
-    # on the actual historical future state, not on a hand-written prediction.
-    x["s1"] = np.exp(-((x.cum_runs-current_runs).abs()) / 7.0)
-    x["s2"] = np.exp(-((x.cum_wk-wickets).abs()) / 1.15)
-    x["s3"] = np.exp(-((x.ball_pos-current_ball).abs()) / 1.5)
-    x["s4"] = np.exp(-((x.current_rr-current_rr_live).abs()) / 1.15)
-    x["s5"] = np.exp(-((x.runs_last12-live["runs_last12"]).abs()) / 8.0)
-    x["s6"] = np.exp(-((x.runs_last6-live["runs_last6"]).abs()) / 6.0)
-    x["s7"] = np.exp(-((x.momentum-live["momentum"]).abs()) / 2.0)
-    x["s8"] = np.exp(-((x.required_rr-live_required_rr).abs()) / 1.7)
-    x["team"] = ((x.batting_team == batting).astype(float) + 0.85*(x.bowling_team == bowling).astype(float))
+    x["s1"] = np.exp(-((x.cum_runs - current_runs).abs()) / 8.0)
+    x["s2"] = np.exp(-((x.cum_wk - wickets).abs()) / 1.35)
+    x["s3"] = np.exp(-((x.ball_pos - current_ball).abs()) / 2.0)
+    x["s4"] = np.exp(-((x.current_rr - current_rr_live).abs()) / 1.4)
+    x["s5"] = np.exp(-((x.runs_last12 - live["runs_last12"]).abs()) / 10.0)
+    x["s6"] = np.exp(-((x.runs_last6 - live["runs_last6"]).abs()) / 7.0)
+    x["s7"] = np.exp(-((x.momentum - live["momentum"]).abs()) / 2.5)
+    x["s8"] = np.exp(-((x.required_rr - live_required_rr).abs()) / 2.0)
+    x["team"] = ((x.batting_team == batting).astype(float) + 0.85 * (x.bowling_team == bowling).astype(float))
     x["ground"] = (x.venue == venue).astype(float)
 
     x["similarity"] = (
-        0.17*x.s1 + 0.11*x.s2 + 0.08*x.s3 + 0.13*x.s4 +
-        0.12*x.s5 + 0.08*x.s6 + 0.07*x.s7 + 0.12*x.s8 +
-        0.05*x.ground + 0.07*(x.team/1.85)
+        0.15*x.s1 + 0.10*x.s2 + 0.08*x.s3 + 0.12*x.s4 +
+        0.13*x.s5 + 0.10*x.s6 + 0.08*x.s7 + 0.10*x.s8 +
+        0.07*x.ground + 0.07*(x.team/1.85)
     )
-    x["weight"] = x.similarity.clip(lower=0.02)
+    x["weight"] = x.similarity.clip(lower=0.03)
+    x = x.sort_values("weight", ascending=False).head(1500)
+    return x, "V2: score + wickets + RR + recent 6/12-ball trend + momentum + target pressure + team + ground"
 
-    grouped = history.groupby(["match_id", "innings_no"], sort=False)
+def add_future_scores(candidates):
+    if candidates.empty:
+        return candidates
     rows = []
-    for _, row in x.iterrows():
+    grouped = history.groupby(["match_id", "innings_no"], sort=False)
+    for _, row in candidates.iterrows():
         try:
-            g = grouped.get_group((row.match_id, int(row.innings_no)))
+            g = grouped.get_group((row.match_id, row.innings_no))
         except KeyError:
             continue
-        future = _historical_state_at(g, target_ball)
-        if future is None:
+        f = g[g.ball_pos <= target_ball]
+        if f.empty:
             continue
+        last = f.iloc[-1]
         r = row.to_dict()
-        r["future_score"] = float(future.cum_runs)
-        r["future_wickets"] = float(future.cum_wk)
-        r["future_runs"] = float(future.cum_runs - row.cum_runs)
-        r["transition_hit"] = 1.0 if float(future.cum_runs) >= target_runs else 0.0
+        r["future_score"] = float(last.cum_runs)
+        r["future_runs"] = float(last.cum_runs - row.cum_runs)
         rows.append(r)
+    return pd.DataFrame(rows)
 
-    if not rows:
-        return pd.DataFrame(), "No historical future transitions available"
-
-    out = pd.DataFrame(rows)
-    out = out.sort_values("weight", ascending=False).head(500)
-    return out, "V3: historical state → actual future transition + score/wicket/RR/trend/required-RR/team/ground"
-
-
-def calibrate_probability(successes, weights, prior_strength=12.0):
-    """Conservative empirical probability with a small 50% prior.
-    This prevents tiny samples from producing fake-looking extreme confidence.
-    The prior is fixed and transparent; it is not tuned to a desired outcome.
-    """
-    weights = np.asarray(weights, dtype=float)
-    successes = np.asarray(successes, dtype=float)
-    total_w = float(weights.sum())
-    if total_w <= 0:
-        return 50.0
-    raw = float(np.sum(successes*weights) / total_w)
-    # Effective sample size for weighted observations.
-    ess = float((weights.sum()**2) / max(1e-9, np.sum(weights**2)))
-    alpha = prior_strength / max(1.0, ess + prior_strength)
-    return 100.0 * ((1.0-alpha)*raw + alpha*0.5)
-
-# ---------------- WIN V3 ----------------
+# ---------------- WIN V2 ----------------
 
 def win_candidates():
     if history.empty:
@@ -490,32 +442,30 @@ def win_candidates():
     ].copy()
     if x.empty:
         return None
-    x = x[(x.cum_runs-current_runs).abs() <= 28]
-    x = x[(x.cum_wk-wickets).abs() <= 3]
+    x = x[(x.cum_runs - current_runs).abs() <= 30]
+    x = x[(x.cum_wk - wickets).abs() <= 3]
     x = x[x.winner.str.strip() != ""]
     if x.empty:
         return None
 
-    x["state_distance"] = (x.ball_pos-current_ball).abs() + (x.cum_runs-current_runs).abs()*0.18 + (x.cum_wk-wickets).abs()*1.4
-    x = x.sort_values("state_distance").groupby(["match_id","innings_no"], sort=False).head(1).copy()
+    x["s1"] = np.exp(-((x.cum_runs-current_runs).abs())/9.0)
+    x["s2"] = np.exp(-((x.cum_wk-wickets).abs())/1.4)
+    x["s3"] = np.exp(-((x.ball_pos-current_ball).abs())/2.0)
+    x["s4"] = np.exp(-((x.current_rr-current_rr_live).abs())/1.5)
+    x["s5"] = np.exp(-((x.runs_last12-live["runs_last12"]).abs())/10.0)
+    x["s6"] = np.exp(-((x.runs_last6-live["runs_last6"]).abs())/7.0)
+    x["s7"] = np.exp(-((x.momentum-live["momentum"]).abs())/2.5)
+    x["team"] = ((x.batting_team == batting).astype(float) + 0.85*(x.bowling_team == bowling).astype(float))
+    x["ground"] = (x.venue == venue).astype(float)
 
-    x["s1"] = np.exp(-((x.cum_runs-current_runs).abs())/8.0)
-    x["s2"] = np.exp(-((x.cum_wk-wickets).abs())/1.2)
-    x["s3"] = np.exp(-((x.ball_pos-current_ball).abs())/1.5)
-    x["s4"] = np.exp(-((x.current_rr-current_rr_live).abs())/1.3)
-    x["s5"] = np.exp(-((x.runs_last12-live["runs_last12"]).abs())/9.0)
-    x["s6"] = np.exp(-((x.runs_last6-live["runs_last6"]).abs())/6.5)
-    x["s7"] = np.exp(-((x.momentum-live["momentum"]).abs())/2.2)
-    x["team"] = ((x.batting_team==batting).astype(float) + 0.85*(x.bowling_team==bowling).astype(float))
-    x["ground"] = (x.venue==venue).astype(float)
     x["similarity"] = (
-        0.20*x.s1 + 0.12*x.s2 + 0.09*x.s3 + 0.14*x.s4 +
-        0.12*x.s5 + 0.09*x.s6 + 0.07*x.s7 +
-        0.07*x.ground + 0.10*(x.team/1.85)
+        0.20*x.s1 + 0.12*x.s2 + 0.08*x.s3 + 0.14*x.s4 +
+        0.14*x.s5 + 0.10*x.s6 + 0.08*x.s7 +
+        0.07*x.ground + 0.07*(x.team/1.85)
     )
-    x["weight"] = x.similarity.clip(lower=0.02)
+    x["weight"] = x.similarity.clip(lower=0.03)
     x["won_flag"] = (x.winner == x.batting_team).astype(float)
-    return x.sort_values("weight", ascending=False).head(500)
+    return x.sort_values("weight", ascending=False).head(1500)
 
 def reliability(n):
     if n >= 500: return "High"
@@ -526,104 +476,111 @@ def reliability(n):
 
 # ---------------- VALIDATION ----------------
 
-def backtest_v3(history_df, sample_size=250, seed=42):
-    """Match-level holdout test of the same transition idea used live.
-    The selected match is never allowed into its own historical comparison pool.
-    """
+def backtest_v2(history_df, target_delta_runs=20, horizon_balls=24, sample_size=150, seed=42):
     if history_df.empty:
         return None
-    h = history_df.copy()
-    keys = h[["match_id","innings_no"]].drop_duplicates().reset_index(drop=True)
-    if len(keys) < 10:
+    h = history_df[history_df.ball_pos <= 96].copy()
+    if h.empty:
         return None
+
     rng = np.random.default_rng(seed)
+    keys = h[["match_id", "innings_no"]].drop_duplicates().reset_index(drop=True)
     n = min(sample_size, len(keys))
     chosen = keys.iloc[rng.choice(len(keys), size=n, replace=False)]
-    grouped = h.groupby(["match_id","innings_no"], sort=False)
-    session_hits=[]; win_hits=[]; brier=[]; states=0
+    grouped = h.groupby(["match_id", "innings_no"], sort=False)
+
+    session_hits, win_hits = [], []
+    used = 0
 
     for _, k in chosen.iterrows():
         try:
-            own=grouped.get_group((k.match_id,int(k.innings_no)))
+            own = grouped.get_group((k.match_id, int(k.innings_no)))
         except KeyError:
             continue
-        # Test many different match phases; this keeps 1-6 overs and later phases represented.
-        usable=own[own.ball_pos.between(6,108)]
+        usable = own[own.ball_pos.between(12, 72)]
         if usable.empty:
             continue
-        state=usable.iloc[int(rng.integers(0,len(usable)))]
-        cur=int(state.ball_pos)
-        # Random horizon between 12 and 30 balls, clipped to innings.
-        horizon=int(rng.choice([12,18,24,30]))
-        future=_historical_state_at(own,cur+horizon)
-        if future is None:
+
+        state = usable.iloc[int(rng.integers(0, len(usable)))]
+        cur = int(state.ball_pos)
+        future = own[own.ball_pos <= cur + horizon_balls]
+        if future.empty:
             continue
-        actual_delta=float(future.cum_runs-state.cum_runs)
-        # Target is the actual future score plus a random small requirement. This tests the
-        # transition question rather than a fixed arbitrary target.
-        req=int(rng.integers(8, min(25, int(actual_delta)+12)+1))
-        target=int(state.cum_runs)+req
-        pool=h[(h.innings_no==int(k.innings_no)) & (h.match_id!=k.match_id)].copy()
-        pool=pool[pool.ball_pos.between(max(1,cur-1),cur+1)]
-        pool=pool[(pool.cum_runs-state.cum_runs).abs()<=22]
-        pool=pool[(pool.cum_wk-state.cum_wk).abs()<=3]
+
+        actual_future_runs = float(future.iloc[-1].cum_runs - state.cum_runs)
+        pool = h[(h.innings_no == int(k.innings_no)) & (h.match_id != k.match_id)].copy()
+        pool = pool[pool.ball_pos.between(max(1,cur-1),cur+1)]
+        pool = pool[(pool.cum_runs-state.cum_runs).abs() <= 25]
+        pool = pool[(pool.cum_wk-state.cum_wk).abs() <= 3]
         if pool.empty:
             continue
-        pool["s"]=(
-            0.22*np.exp(-((pool.cum_runs-state.cum_runs).abs())/7.0)+
-            0.12*np.exp(-((pool.cum_wk-state.cum_wk).abs())/1.2)+
-            0.10*np.exp(-((pool.ball_pos-cur).abs())/1.5)+
-            0.15*np.exp(-((pool.current_rr-state.current_rr).abs())/1.2)+
-            0.13*np.exp(-((pool.runs_last12-state.runs_last12).abs())/8.0)+
-            0.08*np.exp(-((pool.runs_last6-state.runs_last6).abs())/6.0)+
-            0.08*np.exp(-((pool.momentum-state.momentum).abs())/2.0)+
-            0.07*(pool.venue==state.venue).astype(float)+
-            0.05*(pool.batting_team==state.batting_team).astype(float)
-        )
-        pool["weight"]=pool.s.clip(lower=0.02)
-        rows=[]
-        for (mid,inn),g in pool.groupby(["match_id","innings_no"],sort=False):
-            full=grouped.get_group((mid,inn))
-            fs=_historical_state_at(full,cur+horizon)
-            if fs is None: continue
-            # nearest state from this match is the starting state.
-            idx=(g.ball_pos-cur).abs().idxmin(); first=g.loc[idx]
-            rows.append((mid,float(fs.cum_runs-first.cum_runs),float(first.weight)))
-        if not rows: continue
-        fr=pd.DataFrame(rows,columns=["mid","future_runs","weight"])
-        p=calibrate_probability((fr.future_runs>=req).astype(float),fr.weight)
-        actual=1 if actual_delta>=req else 0
-        session_hits.append(float((p>=50)==bool(actual)))
-        brier.append(((p/100.0)-actual)**2)
-        valid=pool[pool.winner.str.strip()!=""]
-        if not valid.empty:
-            wp=calibrate_probability(valid.won_flag.to_numpy(),valid.weight.to_numpy())
-            actual_w=int(str(state.winner)==str(state.batting_team))
-            win_hits.append(float((wp>=50)==bool(actual_w)))
-        states+=1
 
-    if states==0: return None
+        pool["s"] = (
+            0.20*np.exp(-((pool.cum_runs-state.cum_runs).abs())/8.0) +
+            0.12*np.exp(-((pool.cum_wk-state.cum_wk).abs())/1.35) +
+            0.10*np.exp(-((pool.ball_pos-cur).abs())/2.0) +
+            0.14*np.exp(-((pool.current_rr-state.current_rr).abs())/1.4) +
+            0.14*np.exp(-((pool.runs_last12-state.runs_last12).abs())/10.0) +
+            0.10*np.exp(-((pool.runs_last6-state.runs_last6).abs())/7.0) +
+            0.08*np.exp(-((pool.momentum-state.momentum).abs())/2.5) +
+            0.07*(pool.venue==state.venue).astype(float) +
+            0.05*((pool.batting_team==state.batting_team).astype(float))
+        )
+        pool["weight"] = pool.s.clip(lower=0.03)
+
+        future_rows = []
+        for (mid, inn), g in pool.groupby(["match_id","innings_no"], sort=False):
+            try:
+                full = grouped.get_group((mid, inn))
+            except KeyError:
+                continue
+            ff = full[full.ball_pos <= cur+horizon_balls]
+            if ff.empty:
+                continue
+            idx = (g.ball_pos-cur).abs().idxmin()
+            first = g.loc[idx]
+            future_rows.append((mid, float(ff.iloc[-1].cum_runs-first.cum_runs), float(first.weight)))
+
+        if future_rows:
+            fr = pd.DataFrame(future_rows, columns=["mid","future_runs","weight"])
+            session_prob = 100*float(np.average((fr.future_runs >= target_delta_runs).astype(float), weights=fr.weight))
+            pred = 1 if session_prob >= 50 else 0
+            actual = 1 if actual_future_runs >= target_delta_runs else 0
+            session_hits.append(1.0 if pred == actual else 0.0)
+
+        pool["won_flag"] = (pool.winner == pool.batting_team).astype(float)
+        valid = pool[pool.winner.str.strip() != ""]
+        if not valid.empty and valid.weight.sum() > 0:
+            wp = 100*float(np.average(valid.won_flag, weights=valid.weight))
+            actual_w = 1 if str(state.winner)==str(state.batting_team) else 0
+            win_hits.append(1.0 if (wp >= 50)==bool(actual_w) else 0.0)
+
+        used += 1
+
+    if used == 0:
+        return None
+
     return {
-        "states":states,
-        "session_accuracy":100*float(np.mean(session_hits)) if session_hits else None,
-        "win_accuracy":100*float(np.mean(win_hits)) if win_hits else None,
-        "session_brier":float(np.mean(brier)) if brier else None,
+        "states": used,
+        "session_accuracy": 100*float(np.mean(session_hits)) if session_hits else None,
+        "win_accuracy": 100*float(np.mean(win_hits)) if win_hits else None,
     }
 
 with st.expander("🧪 VasuDev Historical Validation (advanced)", expanded=False):
-    st.caption("Match-level holdout test. The test match is excluded from its own comparison pool. This is measurement only; it never changes the live percentage.")
+    st.caption("V2 validation uses held-out historical match states. The test match is excluded from its own comparison pool.")
     if st.button("▶ Run Historical Validation", use_container_width=True):
-        with st.spinner("Validating VasuDev V3..."):
-            bt=backtest_v3(history,sample_size=250,seed=42)
+        with st.spinner("Validating VasuDev V2..."):
+            bt = backtest_v2(history, target_delta_runs=max(1, int(required_runs_live)), horizon_balls=max(6, int(remaining)), sample_size=150, seed=42)
         if bt is None:
             st.warning("Not enough historical data for validation.")
         else:
-            a,b,c,d=st.columns(4)
-            if bt["session_accuracy"] is not None: a.metric("Session accuracy",f"{bt['session_accuracy']:.1f}%")
-            if bt["win_accuracy"] is not None: b.metric("WIN accuracy",f"{bt['win_accuracy']:.1f}%")
-            if bt["session_brier"] is not None: c.metric("Session Brier",f"{bt['session_brier']:.3f}")
-            d.metric("Test states",bt["states"])
-            st.info("No 75%, 80% or 90% target is forced. The test reports what the historical sample actually produced.")
+            a,b,c = st.columns(3)
+            if bt["session_accuracy"] is not None:
+                a.metric("Session accuracy", f"{bt['session_accuracy']:.1f}%")
+            if bt["win_accuracy"] is not None:
+                b.metric("WIN accuracy", f"{bt['win_accuracy']:.1f}%")
+            c.metric("Test states", bt["states"])
+            st.info("Validation is measurement only. It does not force the model toward 80% or any other number.")
 
 # ---------------- FINAL RESULT ----------------
 
@@ -647,7 +604,7 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
             other_pct = 100*ow/total
         win_samples = len(win_df)
 
-    cand, method = transition_candidates()
+    cand, method = session_candidates()
     session_yes = session_no = 0.0
     session_samples = 0
     expected_score = range_low = range_high = None
@@ -656,8 +613,8 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
         cand = add_future_scores(cand)
 
     if not cand.empty:
-        cand["hit"] = cand.transition_hit.astype(float)
-        session_yes = calibrate_probability(cand.hit.to_numpy(), cand.weight.to_numpy())
+        cand["hit"] = (cand.future_score >= target_runs).astype(float)
+        session_yes = 100*float(np.average(cand.hit.to_numpy(), weights=cand.weight.to_numpy()))
         session_no = 100-session_yes
         session_samples = len(cand)
         expected_score = float(np.average(cand.future_score, weights=cand.weight))
