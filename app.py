@@ -1,4 +1,4 @@
-# VasuDev V2 - final fixed app.py
+# VasuDev V2 - Manual Live Input Final
 # Paste this whole file over your current app.py
 
 import os
@@ -31,7 +31,7 @@ st.set_page_config(
     page_title="VasuDev Cricket AI",
     page_icon="🐎",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 APP_PASSWORD = os.environ.get("VASUDEV_PASSWORD", "").strip()
@@ -50,45 +50,51 @@ if not st.session_state.vasudev_authenticated:
             background:
                 radial-gradient(circle at top right, #17365d 0%, transparent 35%),
                 linear-gradient(180deg, #061426 0%, #081c35 100%);
-            color: #f8fafc;
         }
         .block-container {
-            max-width: 1400px;
-            padding-top: 1.1rem;
+            max-width: 1500px;
+            padding-top: 1rem;
             padding-bottom: 2rem;
-        }
-        h1, h2, h3, h4, p, label {
-            color: #f8fafc !important;
         }
         .brand {
             display: flex;
             align-items: center;
             gap: 14px;
-            margin-bottom: 3px;
+            margin: 12px 0 18px 0;
+            padding: 14px 18px;
+            border-radius: 16px;
+            background: linear-gradient(135deg, #0d294a, #102f54);
+            border: 1px solid #31577f;
+            box-shadow: 0 8px 24px rgba(0,0,0,.25);
         }
         .horse-logo {
-            width: 58px;
-            height: 58px;
+            width: 74px;
+            height: 62px;
             display: flex;
             align-items: center;
             justify-content: center;
             border-radius: 16px;
-            background: #102d50;
-            border: 1px solid #365b86;
-            box-shadow: 0 8px 22px rgba(0, 0, 0, .28);
-            font-size: 36px;
+            background: #ffffff;
+            border: 1px solid #dbeafe;
+            overflow: hidden;
+            box-shadow: 0 8px 18px rgba(0,0,0,.2);
+        }
+        .horse-logo svg {
+            width: 64px;
+            height: 52px;
+            display: block;
         }
         .brand-name {
-            font-size: 2.35rem;
-            line-height: 1;
+            font-size: 2.25rem;
             font-weight: 800;
-            letter-spacing: .4px;
-            color: #ffffff;
+            color: #fff !important;
+            letter-spacing: .3px;
+            line-height: 1;
         }
         .brand-subtitle {
-            color: #a9bed8;
-            font-size: .92rem;
             margin-top: 6px;
+            color: #b9cfe9 !important;
+            font-size: 0.9rem;
         }
         </style>
         """,
@@ -98,12 +104,39 @@ if not st.session_state.vasudev_authenticated:
     st.markdown(
         """
         <div class="brand">
-            <div class="horse-logo">♞</div>
+            <div class="horse-logo" aria-label="White running horse logo">
+                <svg viewBox="0 0 180 120" xmlns="http://www.w3.org/2000/svg" role="img">
+                    <g fill="none" stroke="#071d38" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M112 24 C126 13 145 15 157 25" />
+                        <path d="M116 25 C106 36 102 49 105 61" />
+                        <path d="M105 61 C112 70 126 73 139 68" />
+                        <path d="M126 20 L124 7 L135 18" />
+                        <path d="M139 20 L148 8 L150 25" />
+                        <path d="M110 31 C98 26 91 31 88 42" />
+                        <path d="M104 38 C94 39 90 48 91 57" />
+                        <path d="M105 61 C91 54 75 55 61 64" />
+                        <path d="M61 64 C48 72 46 86 58 91" />
+                        <path d="M58 91 C78 101 108 96 124 80" />
+                        <path d="M124 80 C133 72 137 65 139 58" />
+                        <path d="M123 77 C137 85 151 94 166 91" />
+                        <path d="M166 91 L174 86" />
+                        <path d="M116 78 C125 91 132 104 145 108" />
+                        <path d="M145 108 L154 106" />
+                        <path d="M67 82 C55 94 42 105 28 101" />
+                        <path d="M28 101 L19 96" />
+                        <path d="M75 87 C65 103 51 113 37 115" />
+                        <path d="M37 115 L27 112" />
+                        <path d="M61 67 C45 57 30 57 18 68" />
+                        <path d="M31 59 C19 54 12 45 14 35" />
+                        <circle cx="143" cy="31" r="2.8" fill="#071d38" stroke="none" />
+                        <path d="M8 78 H34" opacity=".45" />
+                        <path d="M3 89 H29" opacity=".45" />
+                    </g>
+                </svg>
+            </div>
             <div>
                 <div class="brand-name">VasuDev</div>
-                <div class="brand-subtitle">
-                    Cricket Historical & Situation Analyzer
-                </div>
+                <div class="brand-subtitle">Cricket Historical & Situation Analyzer</div>
             </div>
         </div>
         """,
@@ -121,6 +154,8 @@ if not st.session_state.vasudev_authenticated:
             st.error("Incorrect password.")
     st.stop()
 
+# ---------------- MAIN PAGE CSS ----------------
+
 st.markdown(
     """
     <style>
@@ -132,83 +167,47 @@ st.markdown(
     }
 
     .block-container {
-        max-width: 1400px;
-        padding-top: 1.1rem;
+        max-width: 1600px;
+        padding-top: 1.4rem;
         padding-bottom: 2rem;
-    }
-
-    h1, h2, h3, h4, p, label {
-        color: #f8fafc !important;
-    }
-
-    .brand {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-        margin-bottom: 3px;
-    }
-
-    .horse-logo {
-        width: 58px;
-        height: 58px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 16px;
-        background: #102d50;
-        border: 1px solid #365b86;
-        box-shadow: 0 8px 22px rgba(0, 0, 0, .28);
-        font-size: 36px;
-    }
-
-    .brand-name {
-        font-size: 2.35rem;
-        line-height: 1;
-        font-weight: 800;
-        letter-spacing: .4px;
-        color: #ffffff;
-    }
-
-    .brand-subtitle {
-        color: #a9bed8;
-        font-size: .92rem;
-        margin-top: 6px;
     }
 
     .card {
         background: rgba(15, 34, 60, .94);
         padding: 18px;
-        border-radius: 16px;
-        border: 1px solid #284a72;
-        box-shadow: 0 8px 26px rgba(0, 0, 0, .18);
+        border-radius: 18px;
+        border: 1px solid #2d4d72;
+        box-shadow: 0 8px 26px rgba(0,0,0,.18);
     }
 
     .result_yes {
         background: linear-gradient(135deg, #06351f, #0b6040);
+        color: #fff;
+        border: 2px solid #20c77a;
         padding: 22px;
         border-radius: 16px;
-        border: 2px solid #20c77a;
         text-align: center;
-        box-shadow: 0 8px 26px rgba(0, 0, 0, .2);
+        box-shadow: 0 8px 26px rgba(0,0,0,.2);
     }
 
     .result_no {
         background: linear-gradient(135deg, #421010, #681b1b);
+        color: #fff;
+        border: 2px solid #ef5350;
         padding: 22px;
         border-radius: 16px;
-        border: 2px solid #ef5350;
         text-align: center;
-        box-shadow: 0 8px 26px rgba(0, 0, 0, .2);
+        box-shadow: 0 8px 26px rgba(0,0,0,.2);
     }
 
     .small {
-        color: #b6c7da !important;
+        color: #bed0e5 !important;
         font-size: 13px;
     }
 
     div[data-testid="stSelectbox"] label,
     div[data-testid="stNumberInput"] label {
-        color: #d9e7f7 !important;
+        color: #e2edf9 !important;
     }
 
     div.stButton > button {
@@ -226,8 +225,18 @@ st.markdown(
         color: white;
     }
 
-    [data-testid="stMetricValue"] {
-        color: #ffffff;
+    [data-testid="stSidebar"] {
+        background: #071a2e;
+        border-right: 1px solid rgba(255,255,255,.08);
+    }
+
+    .sidebar-info {
+        background: rgba(18, 35, 58, .9);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 14px;
+        padding: 12px 14px;
+        margin-bottom: 10px;
+        color: #dfeaf8;
     }
 
     [data-testid="stStatusWidget"] {
@@ -237,26 +246,7 @@ st.markdown(
     [data-testid="stDecoration"] {
         display: none !important;
     }
-
-    .block-container {
-        padding-top: 2.6rem !important;
-    }
     </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    """
-    <div class="brand">
-        <div class="horse-logo">♞</div>
-        <div>
-            <div class="brand-name">VasuDev</div>
-            <div class="brand-subtitle">
-                Cricket Historical & Situation Analyzer
-            </div>
-        </div>
-    </div>
     """,
     unsafe_allow_html=True,
 )
@@ -348,29 +338,16 @@ def _json_match_to_sqlite(db_path, league, zip_path):
 
                                 runs = int((d.get("runs") or {}).get("total", 0) or 0)
                                 wickets = len(d.get("wickets") or [])
-                                delivery_rows.append(
-                                    (
-                                        match_id,
-                                        innings_no,
-                                        batting_team,
-                                        bowling_team,
-                                        over_no,
-                                        ball_no,
-                                        runs,
-                                        wickets,
-                                        league,
-                                    )
-                                )
+                                delivery_rows.append((
+                                    match_id, innings_no, batting_team, bowling_team,
+                                    over_no, ball_no, runs, wickets, league
+                                ))
 
                 except Exception:
                     continue
 
         if match_rows:
-            out.executemany(
-                "INSERT OR REPLACE INTO matches VALUES (?,?,?,?)",
-                match_rows,
-            )
-
+            out.executemany("INSERT OR REPLACE INTO matches VALUES (?,?,?,?)", match_rows)
         if delivery_rows:
             out.executemany(
                 """
@@ -378,7 +355,7 @@ def _json_match_to_sqlite(db_path, league, zip_path):
                 (match_id, innings_no, batting_team, bowling_team, over_no, ball_no, runs, wickets, league)
                 VALUES (?,?,?,?,?,?,?,?,?)
                 """,
-                delivery_rows,
+                delivery_rows
             )
 
         out.execute("CREATE INDEX idx_deliveries_league ON deliveries(league)")
@@ -394,7 +371,6 @@ def _json_match_to_sqlite(db_path, league, zip_path):
 
 def ensure_bigbash_db(league):
     db_path = DB_PATHS[league]
-
     if db_path.exists():
         return db_path, False
 
@@ -466,7 +442,6 @@ def get_database_counts(db_path_str):
     ) as count_conn:
         match_count = count_conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
         delivery_count = count_conn.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0]
-
     return int(match_count), int(delivery_count)
 
 
@@ -664,14 +639,12 @@ def initialize_live_state():
 
 
 def save_live_state():
-    st.session_state.live_history.append(
-        {
-            "runs": st.session_state.live_runs,
-            "wickets": st.session_state.live_wickets,
-            "ball": st.session_state.live_ball,
-            "action": st.session_state.live_last_action,
-        }
-    )
+    st.session_state.live_history.append({
+        "runs": st.session_state.live_runs,
+        "wickets": st.session_state.live_wickets,
+        "ball": st.session_state.live_ball,
+        "action": st.session_state.live_last_action,
+    })
 
 
 def add_live_ball(runs=0, wicket=False, label=""):
@@ -682,10 +655,7 @@ def add_live_ball(runs=0, wicket=False, label=""):
     st.session_state.live_runs += int(runs)
 
     if wicket:
-        st.session_state.live_wickets = min(
-            10,
-            st.session_state.live_wickets + 1,
-        )
+        st.session_state.live_wickets = min(10, st.session_state.live_wickets + 1)
 
     st.session_state.live_ball += 1
     st.session_state.live_last_action = label
@@ -717,115 +687,121 @@ def reset_live_state():
 
 initialize_live_state()
 
-league = st.selectbox("🏆 League", ["IPL", "Men's Big Bash League", "Women's Big Bash League"], index=0)
+# -------- sidebar fixed settings --------
+with st.sidebar:
+    st.markdown(
+        """
+        <div class="sidebar-info">
+            <strong>Quick Setup</strong><br>
+            Base details set karne ke baad ball-by-ball update easy hota hai.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-if league != "IPL":
-    try:
-        selected_db, built_now = ensure_bigbash_db(league)
-    except Exception as exc:
-        st.error(str(exc))
-        st.info("IPL remains available. Reload after the hosting service has internet access to prepare Big Bash data.")
+    league = st.selectbox("🏆 League", ["IPL", "Men's Big Bash League", "Women's Big Bash League"], index=0)
+
+    if league != "IPL":
+        try:
+            selected_db, built_now = ensure_bigbash_db(league)
+        except Exception as exc:
+            st.error(str(exc))
+            st.info("IPL remains available. Reload after the hosting service has internet access to prepare Big Bash data.")
+            st.stop()
+    else:
+        selected_db = DB_PATHS["IPL"]
+        built_now = False
+
+    conn = get_cached_db_connection(str(selected_db))
+    if conn is None:
+        st.error(f"Historical database for {league} not found.")
         st.stop()
-else:
-    selected_db = DB_PATHS["IPL"]
-    built_now = False
 
-conn = get_cached_db_connection(str(selected_db))
-if conn is None:
-    st.error(f"Historical database for {league} not found.")
-    st.stop()
+    try:
+        match_count, delivery_count = get_database_counts(str(selected_db))
+    except Exception as e:
+        st.error(f"Database could not be read: {e}")
+        st.stop()
 
-try:
-    match_count, delivery_count = get_database_counts(str(selected_db))
-except Exception as e:
-    st.error(f"Database could not be read: {e}")
-    st.stop()
-
-st.success(f"{league} historical database connected • {match_count:,} matches • {delivery_count:,} deliveries")
-if built_now:
-    st.caption(f"{league} data prepared automatically and opened read-only for analysis.")
-else:
-    st.write(f"Compare the live cricket situation with similar historical {league} situations.")
-
-history = load_history(league, str(selected_db))
-
-teams = get_values(
-    "SELECT DISTINCT batting_team FROM deliveries WHERE league=? ORDER BY batting_team",
-    (league,),
-    conn=conn,
-)
-venues = get_values(
-    "SELECT DISTINCT venue FROM matches WHERE league=? AND venue IS NOT NULL AND venue<>'' ORDER BY venue",
-    (league,),
-    conn=conn,
-)
-
-if not teams:
-    st.error(f"No teams were found for {league}.")
-    st.stop()
-if not venues:
-    venues = ["Unknown Ground"]
-
-# ---------------- LIVE MATCH INPUT ----------------
-
-st.subheader("📺 Live Match Input")
-
-st.caption(
-    "Pehli baar starting score set karo. Baad me har ball par sirf button dabao."
-)
-
-setup1, setup2, setup3, setup4 = st.columns(4)
-
-with setup1:
-    innings_label = st.selectbox("Innings", ["1st Innings", "2nd Innings"], key="setup_innings")
-
-with setup2:
-    setup_current_over = st.selectbox(
-        "Starting Over / Ball",
-        VALID_CURRENT_POINTS,
-        index=VALID_CURRENT_POINTS.index("3.1"),
-        key="setup_current_over",
+    st.markdown(
+        f"""
+        <div class="sidebar-info">
+            <strong>{league}</strong><br>
+            {match_count:,} matches<br>
+            {delivery_count:,} deliveries
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-with setup3:
-    setup_current_runs = st.number_input(
-        "Starting Runs",
-        min_value=0,
-        max_value=400,
-        value=16,
-        step=1,
-        key="setup_current_runs",
+    history = load_history(league, str(selected_db))
+
+    teams = get_values(
+        "SELECT DISTINCT batting_team FROM deliveries WHERE league=? ORDER BY batting_team",
+        (league,),
+        conn=conn,
+    )
+    venues = get_values(
+        "SELECT DISTINCT venue FROM matches WHERE league=? AND venue IS NOT NULL AND venue<>'' ORDER BY venue",
+        (league,),
+        conn=conn,
     )
 
-with setup4:
-    setup_wickets = st.number_input(
-        "Starting Wickets",
-        min_value=0,
-        max_value=10,
-        value=1,
-        step=1,
-        key="setup_wickets",
-    )
+    if not teams:
+        st.error(f"No teams were found for {league}.")
+        st.stop()
 
-if st.button("✅ Set Current Match Situation", use_container_width=True):
-    st.session_state.live_initialized = True
-    st.session_state.live_runs = int(setup_current_runs)
-    st.session_state.live_wickets = int(setup_wickets)
-    st.session_state.live_ball = balls_from_over_ball(setup_current_over)
-    st.session_state.live_history = []
-    st.session_state.live_last_action = "Starting situation set"
-    st.rerun()
+    if not venues:
+        venues = ["Unknown Ground"]
 
-if st.session_state.live_initialized:
-    current_runs = st.session_state.live_runs
-    wickets = st.session_state.live_wickets
-    current_ball = st.session_state.live_ball
-    current_over = over_ball_from_balls(current_ball)
-else:
-    current_runs = int(setup_current_runs)
-    wickets = int(setup_wickets)
-    current_ball = balls_from_over_ball(setup_current_over)
-    current_over = over_ball_from_balls(current_ball)
+    st.markdown("### Match Setup")
+    batting = st.selectbox("Batting Team", teams, index=min(len(teams)-1, 0))
+    bowling_options = [x for x in teams if x != batting]
+    bowling = st.selectbox("Bowling Team", bowling_options, index=min(len(bowling_options)-1, 0))
+    venue = st.selectbox("Ground", venues, index=0)
+    innings_label = st.selectbox("Innings", ["1st Innings", "2nd Innings"])
+    target_runs = st.number_input("Target Runs", min_value=0, max_value=400, value=50, step=1)
+    future_over = st.selectbox("Future Point", VALID_FUTURE_POINTS, index=VALID_FUTURE_POINTS.index("7.1"))
+
+    setup_current_over = st.selectbox("Start Over / Ball", VALID_CURRENT_POINTS, index=VALID_CURRENT_POINTS.index("3.1"))
+    setup_current_runs = st.number_input("Start Runs", min_value=0, max_value=400, value=16, step=1)
+    setup_wickets = st.number_input("Start Wickets", min_value=0, max_value=10, value=1, step=1)
+
+    if st.button("✅ Set Current Match Situation", use_container_width=True):
+        st.session_state.live_initialized = True
+        st.session_state.live_runs = int(setup_current_runs)
+        st.session_state.live_wickets = int(setup_wickets)
+        st.session_state.live_ball = balls_from_over_ball(setup_current_over)
+        st.session_state.live_history = []
+        st.session_state.live_last_action = "Starting situation set"
+
+    st.markdown("### Live Input Help")
+    st.caption("Ball updates ke baad result button daba kar analysis karo.")
+
+    if st.button("🔄 Reset Live Situation", use_container_width=True):
+        reset_live_state()
+
+# -------- main page --------
+
+# If not initialized, set default from sidebar values
+if not st.session_state.live_initialized:
+    if "setup_current_runs" in st.session_state:
+        st.session_state.live_runs = int(st.session_state.setup_current_runs)
+        st.session_state.live_wickets = int(st.session_state.setup_wickets)
+        st.session_state.live_ball = balls_from_over_ball(st.session_state.setup_current_over)
+        st.session_state.live_initialized = True
+
+# Safe final values
+current_runs = st.session_state.live_runs
+wickets = st.session_state.live_wickets
+current_ball = st.session_state.live_ball
+current_over = over_ball_from_balls(current_ball)
+innings_no = 1 if innings_label == "1st Innings" else 2
+target_ball = balls_from_over_ball(future_over)
+remaining = max(0, target_ball - current_ball)
+current_rr_live = current_runs / current_ball * 6 if current_ball > 0 else 0.0
+required_runs_live = max(0, target_runs - current_runs)
+required_rr_live = required_runs_live / remaining * 6 if remaining > 0 else 999.0
 
 st.markdown(
     f"""
@@ -834,6 +810,8 @@ st.markdown(
         <h2>{current_runs}/{wickets}</h2>
         <p class="small">
             Over/Ball: {current_over}
+            • Target: {target_runs}
+            • Required RR: {required_rr_live:.2f}
             • Last action: {st.session_state.live_last_action or "—"}
         </p>
     </div>
@@ -841,173 +819,72 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.markdown("### ⚡ Last Ball Update")
+st.markdown("### ⚡ Ball-by-Ball Update")
 
-run1, run2, run3, run4 = st.columns(4)
-
-with run1:
+button_row1, button_row2, button_row3, button_row4 = st.columns(4)
+with button_row1:
     if st.button("• Dot", use_container_width=True):
         add_live_ball(0, False, "Dot ball")
         st.rerun()
 
-with run2:
+with button_row2:
     if st.button("1 Run", use_container_width=True):
         add_live_ball(1, False, "1 run")
         st.rerun()
 
-with run3:
+with button_row3:
     if st.button("2 Runs", use_container_width=True):
         add_live_ball(2, False, "2 runs")
         st.rerun()
 
-with run4:
+with button_row4:
     if st.button("3 Runs", use_container_width=True):
         add_live_ball(3, False, "3 runs")
         st.rerun()
 
-run5, run6, run7, run8 = st.columns(4)
-
-with run5:
+button_row5, button_row6, button_row7, button_row8 = st.columns(4)
+with button_row5:
     if st.button("4 Runs", use_container_width=True):
         add_live_ball(4, False, "4 runs")
         st.rerun()
 
-with run6:
+with button_row6:
     if st.button("6 Runs", use_container_width=True):
         add_live_ball(6, False, "6 runs")
         st.rerun()
 
-with run7:
+with button_row7:
     if st.button("🔴 Wicket", use_container_width=True):
         add_live_ball(0, True, "Wicket")
         st.rerun()
 
-with run8:
+with button_row8:
     if st.button("↩ Undo", use_container_width=True):
         undo_live_ball()
         st.rerun()
 
-extra1, extra2 = st.columns(2)
+# -------- live details --------
+st.subheader("📊 Match Detail")
 
-with extra1:
-    if st.button("🔄 Reset Live Situation", use_container_width=True):
-        reset_live_state()
-        st.rerun()
-
-with extra2:
-    if st.button("✏️ Correct Score Manually", use_container_width=True):
-        st.session_state.show_manual_correction = True
-
-if st.session_state.get("show_manual_correction", False):
-    st.markdown("### ✏️ Manual Correction")
-
-    correction1, correction2, correction3 = st.columns(3)
-
-    with correction1:
-        corrected_runs = st.number_input(
-            "Correct Runs",
-            min_value=0,
-            max_value=400,
-            value=int(current_runs),
-            step=1,
-            key="corrected_runs",
-        )
-
-    with correction2:
-        corrected_wickets = st.number_input(
-            "Correct Wickets",
-            min_value=0,
-            max_value=10,
-            value=int(wickets),
-            step=1,
-            key="corrected_wickets",
-        )
-
-    with correction3:
-        corrected_over = st.selectbox(
-            "Correct Over / Ball",
-            VALID_CURRENT_POINTS,
-            index=min(len(VALID_CURRENT_POINTS) - 1, current_ball),
-            key="corrected_over",
-        )
-
-    if st.button("✅ Save Correction", use_container_width=True):
-        st.session_state.live_runs = int(corrected_runs)
-        st.session_state.live_wickets = int(corrected_wickets)
-        st.session_state.live_ball = balls_from_over_ball(corrected_over)
-        st.session_state.live_last_action = "Manual correction"
-        st.session_state.show_manual_correction = False
-        st.rerun()
-
-# ---------------- MATCH CONTEXT ----------------
-
-st.subheader("🏏 Current Match")
-c1, c2, c3 = st.columns(3)
-
-with c1:
-    preferred_bat = {
-        "IPL": "Sunrisers Hyderabad",
-        "Men's Big Bash League": "Melbourne Stars",
-        "Women's Big Bash League": "Sydney Sixers",
-    }.get(league)
-    default_bat = preferred_bat if preferred_bat in teams else teams[0]
-    batting = st.selectbox("Batting Team", teams, index=teams.index(default_bat))
-
-with c2:
-    bowling_options = [x for x in teams if x != batting]
-    preferred_bowl = {
-        "IPL": "Rajasthan Royals",
-        "Men's Big Bash League": "Sydney Sixers",
-        "Women's Big Bash League": "Sydney Thunder",
-    }.get(league)
-    default_bowl = preferred_bowl if preferred_bowl in bowling_options else bowling_options[0]
-    bowling = st.selectbox("Bowling Team", bowling_options, index=bowling_options.index(default_bowl))
-
-with c3:
-    venue = st.selectbox("Ground", venues, index=0)
-
-# ---------------- TARGET ----------------
-
-st.subheader("🎯 Target & Future Point")
-st.caption("Future Point = kis over/ball tak dekhna hai. Target Runs = us point tak total score kitna pahunchna hai.")
-
-target_col1, target_col2 = st.columns(2)
-
-with target_col1:
-    target_runs = st.number_input(
-        "Target Runs",
-        min_value=0,
-        max_value=400,
-        value=50,
-        step=1,
-        key="target_runs_input",
-    )
-
-with target_col2:
-    future_over = st.selectbox(
-        "Future Ball / Over",
-        VALID_FUTURE_POINTS,
-        index=VALID_FUTURE_POINTS.index("7.1"),
-        key="future_over_input",
-    )
-
-match_format = "T20"
-innings_no = 1 if innings_label == "1st Innings" else 2
-target_ball = balls_from_over_ball(future_over)
-remaining = max(0, target_ball - current_ball)
-current_rr_live = current_runs / current_ball * 6 if current_ball > 0 else 0.0
-required_runs_live = max(0, target_runs - current_runs)
-required_rr_live = required_runs_live / remaining * 6 if remaining > 0 else 999.0
-
-st.info(
-    f"**Live situation:** {current_runs}/{wickets} at {over_ball_from_balls(current_ball)} • "
-    f"**Current RR:** {current_rr_live:.2f} • "
-    f"**Future point:** {over_ball_from_balls(target_ball)} • "
-    f"**Balls remaining:** {remaining} • **Target:** {target_runs} • "
-    f"**Runs required:** {required_runs_live} • **Required RR:** {required_rr_live:.2f}"
-)
+detail1, detail2, detail3, detail4 = st.columns(4)
+with detail1:
+    st.markdown(f"<div class='card'><strong>Batting</strong><br>{batting}</div>", unsafe_allow_html=True)
+with detail2:
+    st.markdown(f"<div class='card'><strong>Bowling</strong><br>{bowling}</div>", unsafe_allow_html=True)
+with detail3:
+    st.markdown(f"<div class='card'><strong>Ground</strong><br>{venue}</div>", unsafe_allow_html=True)
+with detail4:
+    st.markdown(f"<div class='card'><strong>Innings</strong><br>{innings_label}</div>", unsafe_allow_html=True)
 
 # ---------------- LIVE TREND ----------------
+
+def match_phase(ball_pos):
+    ball_pos = int(ball_pos)
+    if ball_pos <= 36:
+        return "powerplay"
+    if ball_pos <= 90:
+        return "middle"
+    return "death"
 
 def estimate_live_trend():
     if history.empty:
@@ -1037,16 +914,6 @@ def estimate_live_trend():
     }
 
 live = estimate_live_trend()
-
-# ---------------- PHASE AWARE ----------------
-
-def match_phase(ball_pos):
-    ball_pos = int(ball_pos)
-    if ball_pos <= 36:
-        return "powerplay"
-    if ball_pos <= 90:
-        return "middle"
-    return "death"
 
 # ---------------- HISTORY SIMILARITY ----------------
 
@@ -1218,140 +1085,6 @@ def reliability(n):
     return "Very limited"
 
 
-# ---------------- VALIDATION ----------------
-
-def backtest_v2(history_df, target_delta_runs=20, horizon_balls=24, sample_size=150, seed=42):
-    if history_df.empty:
-        return None
-
-    h = history_df[history_df.ball_pos <= 96].copy()
-    if h.empty:
-        return None
-
-    rng = np.random.default_rng(seed)
-    keys = h[["match_id", "innings_no"]].drop_duplicates().reset_index(drop=True)
-    n = min(sample_size, len(keys))
-    chosen = keys.iloc[rng.choice(len(keys), size=n, replace=False)]
-    grouped = h.groupby(["match_id", "innings_no"], sort=False)
-
-    session_hits, win_hits = [], []
-    used = 0
-
-    for _, k in chosen.iterrows():
-        try:
-            own = grouped.get_group((k.match_id, int(k.innings_no)))
-        except KeyError:
-            continue
-
-        usable = own[own.ball_pos.between(12, 72)]
-        if usable.empty:
-            continue
-
-        state = usable.iloc[int(rng.integers(0, len(usable)))]
-        cur = int(state.ball_pos)
-
-        future = own[own.ball_pos <= cur + horizon_balls]
-        if future.empty:
-            continue
-
-        actual_future_runs = float(future.iloc[-1].cum_runs - state.cum_runs)
-
-        pool = h[(h.innings_no == int(k.innings_no)) & (h.match_id != k.match_id)].copy()
-        pool = pool[pool.ball_pos.between(max(1, cur - 1), cur + 1)]
-        pool = pool[(pool.cum_runs - state.cum_runs).abs() <= 25]
-        pool = pool[(pool.cum_wk - state.cum_wk).abs() <= 3]
-
-        if pool.empty:
-            continue
-
-        pool["s"] = (
-            0.20 * np.exp(-((pool.cum_runs - state.cum_runs).abs()) / 8.0)
-            + 0.12 * np.exp(-((pool.cum_wk - state.cum_wk).abs()) / 1.35)
-            + 0.10 * np.exp(-((pool.ball_pos - cur).abs()) / 2.0)
-            + 0.14 * np.exp(-((pool.current_rr - state.current_rr).abs()) / 1.4)
-            + 0.14 * np.exp(-((pool.runs_last12 - state.runs_last12).abs()) / 10.0)
-            + 0.10 * np.exp(-((pool.runs_last6 - state.runs_last6).abs()) / 7.0)
-            + 0.08 * np.exp(-((pool.momentum - state.momentum).abs()) / 2.5)
-            + 0.07 * (pool.venue == state.venue).astype(float)
-            + 0.05 * ((pool.batting_team == state.batting_team).astype(float))
-        )
-
-        pool["weight"] = pool.s.clip(lower=0.03)
-
-        future_rows = []
-        for (mid, inn), g in pool.groupby(["match_id", "innings_no"], sort=False):
-            try:
-                full = grouped.get_group((mid, inn))
-            except KeyError:
-                continue
-
-            ff = full[full.ball_pos <= cur + horizon_balls]
-            if ff.empty:
-                continue
-
-            first = g.loc[(g.ball_pos - cur).abs().idxmin()]
-            future_rows.append((mid, float(ff.iloc[-1].cum_runs - first.cum_runs), float(first.weight)))
-
-        if future_rows:
-            fr = pd.DataFrame(future_rows, columns=["mid", "future_runs", "weight"])
-            session_prob = 100 * float(np.average((fr.future_runs >= target_delta_runs).astype(float), weights=fr.weight))
-            pred = 1 if session_prob >= 50 else 0
-            actual = 1 if actual_future_runs >= target_delta_runs else 0
-            session_hits.append(1.0 if pred == actual else 0.0)
-
-        valid = pool[pool.winner.str.strip() != ""]
-        if not valid.empty and valid.weight.sum() > 0:
-            wp = 100 * float(np.average(valid.winner.eq(valid.batting_team).astype(float), weights=valid.weight))
-            actual_w = 1 if str(state.winner) == str(state.batting_team) else 0
-            win_hits.append(1.0 if (wp >= 50) == bool(actual_w) else 0.0)
-
-        used += 1
-
-    if used == 0:
-        return None
-
-    return {
-        "states": used,
-        "session_accuracy": 100 * float(np.mean(session_hits)) if session_hits else None,
-        "win_accuracy": 100 * float(np.mean(win_hits)) if win_hits else None,
-    }
-
-
-@st.cache_data(show_spinner=False, max_entries=32)
-def cached_backtest(history_df, target_delta_runs, horizon_balls, sample_size=150, seed=42):
-    return backtest_v2(
-        history_df,
-        target_delta_runs=target_delta_runs,
-        horizon_balls=horizon_balls,
-        sample_size=sample_size,
-        seed=seed,
-    )
-
-
-with st.expander("🧪 VasuDev Historical Validation (advanced)", expanded=False):
-    st.caption("V2 validation uses held-out historical match states. The test match is excluded from its own comparison pool.")
-    if st.button("▶ Run Historical Validation", use_container_width=True):
-        with st.spinner("Validating VasuDev V2..."):
-            bt = cached_backtest(
-                history,
-                target_delta_runs=max(1, int(required_runs_live)),
-                horizon_balls=max(6, int(remaining)),
-                sample_size=300,
-                seed=42,
-            )
-
-        if bt is None:
-            st.warning("Not enough historical data for validation.")
-        else:
-            a, b, c = st.columns(3)
-            if bt["session_accuracy"] is not None:
-                a.metric("Session accuracy", f"{bt['session_accuracy']:.1f}%")
-            if bt["win_accuracy"] is not None:
-                b.metric("WIN accuracy", f"{bt['win_accuracy']:.1f}%")
-            c.metric("Test states", bt["states"])
-
-            st.info("Validation is measurement only. It does not force the model toward 80% or any other number.")
-
 # ---------------- FINAL ANALYZE ----------------
 
 if st.button("🔎 ANALYZE CURRENT SITUATION", use_container_width=True, disabled=(target_ball <= current_ball)):
@@ -1374,9 +1107,9 @@ if st.button("🔎 ANALYZE CURRENT SITUATION", use_container_width=True, disable
             raw_loss = 100 * lw / total
             raw_other = 100 * ow / total
 
-            win_pct = calibrate_probability(raw_win, win_samples if win_samples > 0 else 1)
-            loss_pct = calibrate_probability(raw_loss, win_samples if win_samples > 0 else 1)
-            other_pct = calibrate_probability(raw_other, win_samples if win_samples > 0 else 1)
+            win_pct = calibrate_probability(raw_win, len(win_df))
+            loss_pct = calibrate_probability(raw_loss, len(win_df))
+            other_pct = calibrate_probability(raw_other, len(win_df))
         win_samples = len(win_df)
 
     cand, method = session_candidates()
