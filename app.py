@@ -19,7 +19,7 @@ DB_PATHS = {
 }
 DATA_URLS = {
     "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
-    "Women's Big Bash League": "https://cricsheet.org/downloads/wbbl_json.zip",
+    "Women's Big Bash League": "https://cricsheet.org/downloads/wbb_json.zip",
 }
 
 st.set_page_config(page_title="VasuDev", page_icon="🏏", layout="wide")
@@ -625,4 +625,6 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
             st.write(f"Expected score at future point: **{safe_round(expected_score)}** • Historical 10–90% range: **{safe_round(range_low)}–{safe_round(range_high)}**")
             st.caption(f"Similarity: {method}. Team, ground, score, wickets and ball position are weighted; broader {league} data is used when exact situations are sparse.")
         if win_samples:
-            st.write(f"WIN:
+            st.write(f"WIN: **{win_pct:.1f}%** • LOSS: **{loss_pct:.1f}%** • Other/Tie: **{other_pct:.1f}%**")
+        st.write("VasuDev does not manually increase a probability to make it look better. Advanced validation/backtesting is kept separate from the live result.")
+
