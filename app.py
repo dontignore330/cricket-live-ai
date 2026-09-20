@@ -1,5 +1,5 @@
-# VasuDev V2 - optimized & deploy-safe app.py
-# Replace your current app.py with this full file.
+# VasuDev V2 - complete app.py
+# Paste this whole file over your current app.py.
 
 import os
 import hmac
@@ -27,7 +27,12 @@ DATA_URLS = {
     "Women's Big Bash League": "https://cricsheet.org/downloads/wbb_json.zip",
 }
 
-st.set_page_config(page_title="VasuDev", page_icon="🏏", layout="wide")
+st.set_page_config(
+    page_title="VasuDev Cricket AI",
+    page_icon="🐎",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
 APP_PASSWORD = os.environ.get("VASUDEV_PASSWORD", "").strip()
 if not APP_PASSWORD:
@@ -38,6 +43,73 @@ if "vasudev_authenticated" not in st.session_state:
     st.session_state.vasudev_authenticated = False
 
 if not st.session_state.vasudev_authenticated:
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background:
+                radial-gradient(circle at top right, #17365d 0%, transparent 35%),
+                linear-gradient(180deg, #061426 0%, #081c35 100%);
+            color: #f8fafc;
+        }
+        .block-container {
+            max-width: 1400px;
+            padding-top: 1.1rem;
+            padding-bottom: 2rem;
+        }
+        h1, h2, h3, h4, p, label {
+            color: #f8fafc !important;
+        }
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 3px;
+        }
+        .horse-logo {
+            width: 58px;
+            height: 58px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 16px;
+            background: #102d50;
+            border: 1px solid #365b86;
+            box-shadow: 0 8px 22px rgba(0, 0, 0, .28);
+            font-size: 36px;
+        }
+        .brand-name {
+            font-size: 2.35rem;
+            line-height: 1;
+            font-weight: 800;
+            letter-spacing: .4px;
+            color: #ffffff;
+        }
+        .brand-subtitle {
+            color: #a9bed8;
+            font-size: .92rem;
+            margin-top: 6px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <div class="brand">
+            <div class="horse-logo">🐎</div>
+            <div>
+                <div class="brand-name">VasuDev</div>
+                <div class="brand-subtitle">
+                    Cricket Historical & Situation Analyzer
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.title("🔒 VasuDev Private Access")
     st.caption("Enter the private password to open the cricket analysis app.")
     password = st.text_input("Password", type="password")
@@ -52,13 +124,127 @@ if not st.session_state.vasudev_authenticated:
 st.markdown(
     """
     <style>
-    .main { background:#07111f; }
-    .block-container { padding-top:1.4rem; }
-    .card { background:#0f1b2d; padding:18px; border-radius:14px; border:1px solid #26364d; }
-    .result_yes { background:#06351f; padding:22px; border-radius:16px; border:2px solid #20c77a; text-align:center; }
-    .result_no { background:#3d1010; padding:22px; border-radius:16px; border:2px solid #ef5350; text-align:center; }
-    .small { color:#94a3b8; font-size:13px; }
+    .stApp {
+        background:
+            radial-gradient(circle at top right, #17365d 0%, transparent 35%),
+            linear-gradient(180deg, #061426 0%, #081c35 100%);
+        color: #f8fafc;
+    }
+
+    .block-container {
+        max-width: 1400px;
+        padding-top: 1.1rem;
+        padding-bottom: 2rem;
+    }
+
+    h1, h2, h3, h4, p, label {
+        color: #f8fafc !important;
+    }
+
+    .brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 3px;
+    }
+
+    .horse-logo {
+        width: 58px;
+        height: 58px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 16px;
+        background: #102d50;
+        border: 1px solid #365b86;
+        box-shadow: 0 8px 22px rgba(0, 0, 0, .28);
+        font-size: 36px;
+    }
+
+    .brand-name {
+        font-size: 2.35rem;
+        line-height: 1;
+        font-weight: 800;
+        letter-spacing: .4px;
+        color: #ffffff;
+    }
+
+    .brand-subtitle {
+        color: #a9bed8;
+        font-size: .92rem;
+        margin-top: 6px;
+    }
+
+    .card {
+        background: rgba(15, 34, 60, .94);
+        padding: 18px;
+        border-radius: 16px;
+        border: 1px solid #284a72;
+        box-shadow: 0 8px 26px rgba(0, 0, 0, .18);
+    }
+
+    .result_yes {
+        background: linear-gradient(135deg, #06351f, #0b6040);
+        padding: 22px;
+        border-radius: 16px;
+        border: 2px solid #20c77a;
+        text-align: center;
+        box-shadow: 0 8px 26px rgba(0, 0, 0, .2);
+    }
+
+    .result_no {
+        background: linear-gradient(135deg, #421010, #681b1b);
+        padding: 22px;
+        border-radius: 16px;
+        border: 2px solid #ef5350;
+        text-align: center;
+        box-shadow: 0 8px 26px rgba(0, 0, 0, .2);
+    }
+
+    .small {
+        color: #b6c7da !important;
+        font-size: 13px;
+    }
+
+    div[data-testid="stSelectbox"] label,
+    div[data-testid="stNumberInput"] label {
+        color: #d9e7f7 !important;
+    }
+
+    div.stButton > button {
+        border-radius: 11px;
+        min-height: 42px;
+        font-weight: 700;
+        border: 1px solid #3c6795;
+        background: #12365f;
+        color: white;
+    }
+
+    div.stButton > button:hover {
+        border-color: #76a9df;
+        background: #194a7e;
+        color: white;
+    }
+
+    [data-testid="stMetricValue"] {
+        color: #ffffff;
+    }
     </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <div class="brand">
+        <div class="horse-logo">🐎</div>
+        <div>
+            <div class="brand-name">VasuDev</div>
+            <div class="brand-subtitle">
+                Cricket Historical & Situation Analyzer
+            </div>
+        </div>
+    </div>
     """,
     unsafe_allow_html=True,
 )
@@ -436,9 +622,6 @@ def safe_round(x):
 
 # ---------------- APP ----------------
 
-st.title("🏏 VasuDev")
-st.caption("Cricket Historical & Situation Analyzer")
-
 league = st.selectbox("🏆 League", ["IPL", "Men's Big Bash League", "Women's Big Bash League"], index=0)
 
 if league != "IPL":
@@ -584,6 +767,17 @@ def estimate_live_trend():
 
 live = estimate_live_trend()
 
+# ---------------- PHASE AWARE ----------------
+
+def match_phase(ball_pos):
+    ball_pos = int(ball_pos)
+
+    if ball_pos <= 36:
+        return "powerplay"
+    if ball_pos <= 90:
+        return "middle"
+    return "death"
+
 
 # ---------------- HISTORY SIMILARITY ----------------
 
@@ -591,16 +785,26 @@ def session_candidates():
     if history.empty or target_ball <= current_ball:
         return pd.DataFrame(), "No usable historical data"
 
+    current_phase = match_phase(current_ball)
+
     x = history[
         (history.innings_no == innings_no)
-        & (history.ball_pos.between(max(1, current_ball - 1), current_ball + 1))
+        & (
+            history.ball_pos.between(
+                max(1, current_ball - 2),
+                current_ball + 2,
+            )
+        )
     ].copy()
 
     if x.empty:
         return pd.DataFrame(), "No historical state near this ball"
 
+    x["phase"] = x["ball_pos"].map(match_phase)
+    x["phase_match"] = (x["phase"] == current_phase).astype(float)
+
     x = x[x.ball_pos < target_ball]
-    x = x[(x.cum_runs - current_runs).abs() <= 25]
+    x = x[(x.cum_runs - current_runs).abs() <= 30]
     x = x[(x.cum_wk - wickets).abs() <= 3]
 
     if x.empty:
@@ -610,36 +814,44 @@ def session_candidates():
 
     x["required_runs"] = (target_runs - x.cum_runs).clip(lower=0)
     x["remaining_balls"] = (target_ball - x.ball_pos).clip(lower=1)
-    x["required_rr"] = x.required_runs / x.remaining_balls * 6
+    x["required_rr"] = x.required_runs / x.remaining_balls * 6.0
 
-    x["s1"] = np.exp(-((x.cum_runs - current_runs).abs()) / 8.0)
-    x["s2"] = np.exp(-((x.cum_wk - wickets).abs()) / 1.35)
-    x["s3"] = np.exp(-((x.ball_pos - current_ball).abs()) / 2.0)
-    x["s4"] = np.exp(-((x.current_rr - current_rr_live).abs()) / 1.4)
-    x["s5"] = np.exp(-((x.runs_last12 - live["runs_last12"]).abs()) / 10.0)
-    x["s6"] = np.exp(-((x.runs_last6 - live["runs_last6"]).abs()) / 7.0)
-    x["s7"] = np.exp(-((x.momentum - live["momentum"]).abs()) / 2.5)
-    x["s8"] = np.exp(-((x.required_rr - live_required_rr).abs()) / 2.0)
-    x["team"] = ((x.batting_team == batting).astype(float) + 0.85 * (x.bowling_team == bowling).astype(float))
-    x["ground"] = (x.venue == venue).astype(float)
+    x["s_score"] = np.exp(-((x.cum_runs - current_runs).abs()) / 10.0)
+    x["s_wickets"] = np.exp(-((x.cum_wk - wickets).abs()) / 1.5)
+    x["s_ball"] = np.exp(-((x.ball_pos - current_ball).abs()) / 2.5)
+    x["s_rr"] = np.exp(-((x.current_rr - current_rr_live).abs()) / 1.8)
+    x["s_required_rr"] = np.exp(-((x.required_rr - live_required_rr).abs()) / 2.2)
+    x["s_last6"] = np.exp(-((x.runs_last6 - live["runs_last6"]).abs()) / 7.0)
+    x["s_last12"] = np.exp(-((x.runs_last12 - live["runs_last12"]).abs()) / 10.0)
+    x["s_momentum"] = np.exp(-((x.momentum - live["momentum"]).abs()) / 2.5)
+
+    x["team_match"] = (
+        (x.batting_team == batting).astype(float)
+        + 0.85 * (x.bowling_team == bowling).astype(float)
+    ) / 1.85
+
+    x["ground_match"] = (x.venue == venue).astype(float)
 
     x["similarity"] = (
-        0.15 * x.s1
-        + 0.10 * x.s2
-        + 0.08 * x.s3
-        + 0.12 * x.s4
-        + 0.13 * x.s5
-        + 0.10 * x.s6
-        + 0.08 * x.s7
-        + 0.10 * x.s8
-        + 0.07 * x.ground
-        + 0.07 * (x.team / 1.85)
+        0.18 * x["s_score"]
+        + 0.10 * x["s_wickets"]
+        + 0.08 * x["s_ball"]
+        + 0.13 * x["s_rr"]
+        + 0.17 * x["s_required_rr"]
+        + 0.09 * x["s_last6"]
+        + 0.09 * x["s_last12"]
+        + 0.07 * x["s_momentum"]
+        + 0.05 * x["team_match"]
+        + 0.02 * x["ground_match"]
+        + 0.02 * x["phase_match"]
     )
 
-    x["weight"] = x.similarity.clip(lower=0.03)
-    x = x.sort_values("weight", ascending=False).head(1500)
+    x["weight"] = x["similarity"].clip(lower=0.03)
 
-    return x, "V2: score + wickets + RR + recent 6/12-ball trend + momentum + target pressure + team + ground"
+    return (
+        x.sort_values("weight", ascending=False).head(1500),
+        "Phase-aware V2: score + wickets + RR + required RR + recent trend + momentum + teams + ground",
+    )
 
 
 def add_future_scores(candidates):
@@ -654,7 +866,8 @@ def add_future_scores(candidates):
         .sort_values(["match_id", "innings_no", "ball_pos"])
         .groupby(["match_id", "innings_no"], as_index=False, sort=False)
         .tail(1)
-        .rename(columns={"cum_runs": "future_score"})[["match_id", "innings_no", "future_score"]]
+        .rename(columns={"cum_runs": "future_score"})
+        [["match_id", "innings_no", "future_score"]]
     )
 
     if future_scores.empty:
@@ -679,44 +892,62 @@ def win_candidates():
     if history.empty:
         return None
 
+    current_phase = match_phase(current_ball)
+
     x = history[
         (history.innings_no == innings_no)
-        & (history.ball_pos.between(max(1, current_ball - 1), current_ball + 1))
+        & (
+            history.ball_pos.between(
+                max(1, current_ball - 2),
+                current_ball + 2,
+            )
+        )
     ].copy()
 
     if x.empty:
         return None
 
-    x = x[(x.cum_runs - current_runs).abs() <= 30]
+    x["phase"] = x["ball_pos"].map(match_phase)
+    x["phase_match"] = (x["phase"] == current_phase).astype(float)
+
+    x = x[(x.cum_runs - current_runs).abs() <= 35]
     x = x[(x.cum_wk - wickets).abs() <= 3]
     x = x[x.winner.str.strip() != ""]
 
     if x.empty:
         return None
 
-    x["s1"] = np.exp(-((x.cum_runs - current_runs).abs()) / 9.0)
-    x["s2"] = np.exp(-((x.cum_wk - wickets).abs()) / 1.4)
-    x["s3"] = np.exp(-((x.ball_pos - current_ball).abs()) / 2.0)
-    x["s4"] = np.exp(-((x.current_rr - current_rr_live).abs()) / 1.5)
-    x["s5"] = np.exp(-((x.runs_last12 - live["runs_last12"]).abs()) / 10.0)
-    x["s6"] = np.exp(-((x.runs_last6 - live["runs_last6"]).abs()) / 7.0)
-    x["s7"] = np.exp(-((x.momentum - live["momentum"]).abs()) / 2.5)
-    x["team"] = ((x.batting_team == batting).astype(float) + 0.85 * (x.bowling_team == bowling).astype(float))
-    x["ground"] = (x.venue == venue).astype(float)
+    x["s_score"] = np.exp(-((x.cum_runs - current_runs).abs()) / 11.0)
+    x["s_wickets"] = np.exp(-((x.cum_wk - wickets).abs()) / 1.7)
+    x["s_ball"] = np.exp(-((x.ball_pos - current_ball).abs()) / 2.5)
+    x["s_rr"] = np.exp(-((x.current_rr - current_rr_live).abs()) / 2.0)
+    x["s_last6"] = np.exp(-((x.runs_last6 - live["runs_last6"]).abs()) / 8.0)
+    x["s_last12"] = np.exp(-((x.runs_last12 - live["runs_last12"]).abs()) / 11.0)
+    x["s_momentum"] = np.exp(-((x.momentum - live["momentum"]).abs()) / 2.8)
+
+    x["team_match"] = (
+        (x.batting_team == batting).astype(float)
+        + 0.85 * (x.bowling_team == bowling).astype(float)
+    ) / 1.85
+
+    x["ground_match"] = (x.venue == venue).astype(float)
 
     x["similarity"] = (
-        0.20 * x.s1
-        + 0.12 * x.s2
-        + 0.08 * x.s3
-        + 0.14 * x.s4
-        + 0.14 * x.s5
-        + 0.10 * x.s6
-        + 0.08 * x.s7
-        + 0.07 * x.ground
-        + 0.07 * (x.team / 1.85)
+        0.21 * x["s_score"]
+        + 0.13 * x["s_wickets"]
+        + 0.09 * x["s_ball"]
+        + 0.16 * x["s_rr"]
+        + 0.12 * x["s_last6"]
+        + 0.11 * x["s_last12"]
+        + 0.08 * x["s_momentum"]
+        + 0.06 * x["team_match"]
+        + 0.02 * x["ground_match"]
+        + 0.02 * x["phase_match"]
     )
-    x["weight"] = x.similarity.clip(lower=0.03)
+
+    x["weight"] = x["similarity"].clip(lower=0.03)
     x["won_flag"] = (x.winner == x.batting_team).astype(float)
+
     return x.sort_values("weight", ascending=False).head(1500)
 
 
@@ -844,14 +1075,13 @@ def cached_backtest(history_df, target_delta_runs, horizon_balls, sample_size=15
 
 with st.expander("🧪 VasuDev Historical Validation (advanced)", expanded=False):
     st.caption("V2 validation uses held-out historical match states. The test match is excluded from its own comparison pool.")
-
     if st.button("▶ Run Historical Validation", use_container_width=True):
         with st.spinner("Validating VasuDev V2..."):
             bt = cached_backtest(
                 history,
                 target_delta_runs=max(1, int(required_runs_live)),
                 horizon_balls=max(6, int(remaining)),
-                sample_size=150,
+                sample_size=300,
                 seed=42,
             )
 
@@ -926,12 +1156,24 @@ if st.button("🔎 ANALYZE VASUDEV", use_container_width=True, disabled=(target_
     if session_samples:
         label = "YES" if session_yes >= session_no else "NO"
         pct = max(session_yes, session_no)
+
+        if session_samples < 20:
+            confidence_note = "Very limited sample"
+        elif session_samples < 50:
+            confidence_note = "Limited sample"
+        elif pct < 55:
+            confidence_note = "Close call"
+        elif pct < 65:
+            confidence_note = "Moderate confidence"
+        else:
+            confidence_note = "Strong historical signal"
+
         box = "result_yes" if label == "YES" else "result_no"
 
         st.markdown(
             f'<div class="{box}"><h1>{label} — {pct:.1f}%</h1>'
             f'<p>Target <b>{target_runs}</b> by <b>{over_ball_from_balls(target_ball)}</b> • {remaining} balls remaining</p>'
-            f'<p class="small">Historical probability • {session_samples:,} similar situations • Reliability: {reliability(session_samples)}</p></div>',
+            f'<p class="small">Historical probability • {session_samples:,} similar situations • Reliability: {reliability(session_samples)} • {confidence_note}</p></div>',
             unsafe_allow_html=True,
         )
     else:
