@@ -1,4 +1,4 @@
-# VasuDev V2 - Manual Live Input Final
+# VasuDev V2 - final complete app.py
 # Paste this whole file over your current app.py
 
 import os
@@ -245,6 +245,15 @@ st.markdown(
 
     [data-testid="stDecoration"] {
         display: none !important;
+    }
+
+    .session-box {
+        background: rgba(14, 31, 54, 0.92);
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        border-radius: 14px;
+        padding: 18px;
+        margin-top: 12px;
+        box-shadow: 0 8px 22px rgba(0,0,0,.18);
     }
     </style>
     """,
@@ -683,24 +692,171 @@ def reset_live_state():
     st.session_state.live_last_action = ""
 
 
+# ---------------- SESSION ENGINE ----------------
+
+def generate_session_line(current_score, current_wickets, current_ball_pos, session_over, target_runs):
+    if history.empty:
+        return (0, 0, 0.0, 0.0)
+
+    session_target_balls = int(session_over) * 6
+    if current_ball_pos >= session_target_balls:
+        return (0, 0, float(current_score), 0.0)
+
+    mask = (
+        (history["innings_no"] == innings_no)
+        & (history["ball_pos"].between(max(1, current_ball_pos - 2), current_ball_pos + 2))
+    )
+
+    x = history[mask].copy()
+    if x.empty:
+        return (0, 0, float(current_score), 0.0)
+
+    x = x[x["ball_pos"] <= session_target_balls]
+    x = x[(x["cum_runs"] - current_score).abs() <= 30]
+    x = x[(x["cum_wk"] - current_wickets).abs() <= 3]
+
+    if x.empty:
+        return (0, 0, float(current_score), 0.0)
+
+    x["required_runs"] = (target_runs - x["cum_runs"]).clip(lower=0)
+    x["remaining_balls"] = (session_target_balls - x["ball_pos"]).clip(lower=1)
+    x["required_rr"] = x["required_runs"] / x["remaining_balls"] * 6.0
+
+    x["s_score"] = np.exp(-((x["cum_runs"] - current_score).abs()) / 11.0)
+    x["s_wk"] = np.exp(-((x["cum_wk"] - current_wickets).abs()) / 2.0)
+    x["s_rr"] = np.exp(-((x["current_rr"] - current_rr_live).abs()) / 1.8)
+    x["s_last6"] = np.exp(-((x["runs_last6"] - live["runs_last6"]).abs()) / 7.0)
+    x["s_last12"] = np.exp(-((x["runs_last12"] - live["runs_last12"]).abs()) / 10.0)
+    x["s_momentum"] = np.exp(-((x["momentum"] - live["momentum"]).abs()) / 2.5)
+
+    x["team_match"] = (
+        (x["batting_team"] == batting).astype(float)
+        + 0.85 * (x["bowling_team"] == bowling).astype(float)
+    ) / 1.85
+
+    x["ground_match"] = (x["venue"] == venue).astype(float)
+
+    x["similarity"] = (
+        0.22 * x["s_score"]
+        + 0.12 * x["s_wk"]
+        + 0.14 * x["s_rr"]
+        + 0.13 * x["s_last6"]
+        + 0.11 * x["s_last12"]
+        + 0.08 * x["s_momentum"]
+        + 0.08 * x["team_match"]
+        + 0.04 * x["ground_match"]
+    )
+
+    x["weight"] = x["similarity"].clip(lower=0.02)
+    x = x.sort_values("weight", ascending=False).head(2500)
+
+    if x.empty:
+        return (0, 0, float(current_score), 0.0)
+
+    future_scores = (
+        x[["match_id", "innings_no", "cum_runs", "ball_pos"]]
+        .sort_values(["match_id", "innings_no", "ball_pos"])
+        .groupby(["match_id", "innings_no"], as_index=False, sort=False)
+        .tail(1)
+        .rename(columns={"cum_runs": "future_total"})
+    )
+
+    if future_scores.empty:
+        return (0, 0, float(current_score), 0.0)
+
+    expected_score = float(np.average(future_scores["future_total"], weights=x["weight"][:len(future_scores)]))
+    values = future_scores["future_total"].to_numpy()
+
+    low_line = int(np.percentile(values, 10))
+    high_line = int(np.percentile(values, 90))
+    low_line = max(0, low_line)
+    high_line = max(low_line + 1, high_line)
+
+    return (low_line, high_line, float(expected_score), float(np.mean(x["weight"])))
+
+
+def initialize_session_state():
+    defaults = {
+        "session_over": 6,
+        "session_low": 0,
+        "session_high": 0,
+        "session_expected": 0.0,
+        "manual_session_mode": False,
+        "manual_session_low": 0,
+        "manual_session_high": 0,
+        "manual_session_note": "",
+        "session_memory": [],
+        "session_note": "Auto generated",
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def refresh_session_line():
+    session_over = int(st.session_state.get("session_over", 6))
+    session_low, session_high, session_expected, session_conf = generate_session_line(
+        current_runs,
+        wickets,
+        current_ball,
+        session_over,
+        target_runs
+    )
+
+    st.session_state.session_low = int(session_low)
+    st.session_state.session_high = int(session_high)
+    st.session_state.session_expected = float(session_expected)
+    st.session_state.session_note = "Auto generated"
+
+    if "session_memory" not in st.session_state:
+        st.session_state.session_memory = []
+    st.session_state.session_memory.append({
+        "low": session_low,
+        "high": session_high,
+        "score": current_runs,
+        "wickets": wickets,
+        "ball": current_ball,
+        "over": session_over,
+    })
+    if len(st.session_state.session_memory) > 10:
+        st.session_state.session_memory = st.session_state.session_memory[-10:]
+
+
+def apply_manual_session_line(low_line, high_line, note):
+    st.session_state.manual_session_mode = True
+    st.session_state.manual_session_low = int(low_line)
+    st.session_state.manual_session_high = int(high_line)
+    st.session_state.manual_session_note = note
+    st.session_state.session_low = int(low_line)
+    st.session_state.session_high = int(high_line)
+    st.session_state.session_note = f"Manual: {low_line}-{high_line}"
+
+
+def reset_manual_session():
+    st.session_state.manual_session_mode = False
+    st.session_state.manual_session_low = 0
+    st.session_state.manual_session_high = 0
+    st.session_state.manual_session_note = ""
+    refresh_session_line()
+
+
 # ---------------- APP ----------------
 
-initialize_live_state()
+initialize_session_state()
 
-# -------- sidebar fixed settings --------
+# Sidebar
 with st.sidebar:
     st.markdown(
         """
         <div class="sidebar-info">
             <strong>Quick Setup</strong><br>
-            Base details set karne ke baad ball-by-ball update easy hota hai.
+            Keep base details fixed, then update ball-by-ball.
         </div>
         """,
         unsafe_allow_html=True,
     )
 
     league = st.selectbox("🏆 League", ["IPL", "Men's Big Bash League", "Women's Big Bash League"], index=0)
-
     if league != "IPL":
         try:
             selected_db, built_now = ensure_bigbash_db(league)
@@ -750,11 +906,9 @@ with st.sidebar:
     if not teams:
         st.error(f"No teams were found for {league}.")
         st.stop()
-
     if not venues:
         venues = ["Unknown Ground"]
 
-    st.markdown("### Match Setup")
     batting = st.selectbox("Batting Team", teams, index=min(len(teams)-1, 0))
     bowling_options = [x for x in teams if x != batting]
     bowling = st.selectbox("Bowling Team", bowling_options, index=min(len(bowling_options)-1, 0))
@@ -775,23 +929,30 @@ with st.sidebar:
         st.session_state.live_history = []
         st.session_state.live_last_action = "Starting situation set"
 
-    st.markdown("### Live Input Help")
-    st.caption("Ball updates ke baad result button daba kar analysis karo.")
+    st.markdown("### Session Setup")
+    st.session_state.session_over = st.number_input("Session Over", min_value=1, max_value=20, value=6, step=1)
 
     if st.button("🔄 Reset Live Situation", use_container_width=True):
         reset_live_state()
 
-# -------- main page --------
+    st.caption("Ball update ke baad session line auto re-calculate hoti rahegi.")
 
-# If not initialized, set default from sidebar values
+# Initialize live state if not set
+if "live_initialized" not in st.session_state:
+    st.session_state.live_initialized = True
+    st.session_state.live_runs = 16
+    st.session_state.live_wickets = 1
+    st.session_state.live_ball = balls_from_over_ball("3.1")
+    st.session_state.live_history = []
+    st.session_state.live_last_action = "Start"
+
 if not st.session_state.live_initialized:
-    if "setup_current_runs" in st.session_state:
-        st.session_state.live_runs = int(st.session_state.setup_current_runs)
-        st.session_state.live_wickets = int(st.session_state.setup_wickets)
-        st.session_state.live_ball = balls_from_over_ball(st.session_state.setup_current_over)
-        st.session_state.live_initialized = True
+    st.session_state.live_runs = int(setup_current_runs)
+    st.session_state.live_wickets = int(setup_wickets)
+    st.session_state.live_ball = balls_from_over_ball(setup_current_over)
+    st.session_state.live_initialized = True
 
-# Safe final values
+# Use live stored values
 current_runs = st.session_state.live_runs
 wickets = st.session_state.live_wickets
 current_ball = st.session_state.live_ball
@@ -803,6 +964,7 @@ current_rr_live = current_runs / current_ball * 6 if current_ball > 0 else 0.0
 required_runs_live = max(0, target_runs - current_runs)
 required_rr_live = required_runs_live / remaining * 6 if remaining > 0 else 999.0
 
+# Live score card
 st.markdown(
     f"""
     <div class="card">
@@ -819,51 +981,60 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Quick update buttons
 st.markdown("### ⚡ Ball-by-Ball Update")
 
 button_row1, button_row2, button_row3, button_row4 = st.columns(4)
 with button_row1:
     if st.button("• Dot", use_container_width=True):
         add_live_ball(0, False, "Dot ball")
+        refresh_session_line()
         st.rerun()
 
 with button_row2:
     if st.button("1 Run", use_container_width=True):
         add_live_ball(1, False, "1 run")
+        refresh_session_line()
         st.rerun()
 
 with button_row3:
     if st.button("2 Runs", use_container_width=True):
         add_live_ball(2, False, "2 runs")
+        refresh_session_line()
         st.rerun()
 
 with button_row4:
     if st.button("3 Runs", use_container_width=True):
         add_live_ball(3, False, "3 runs")
+        refresh_session_line()
         st.rerun()
 
 button_row5, button_row6, button_row7, button_row8 = st.columns(4)
 with button_row5:
     if st.button("4 Runs", use_container_width=True):
         add_live_ball(4, False, "4 runs")
+        refresh_session_line()
         st.rerun()
 
 with button_row6:
     if st.button("6 Runs", use_container_width=True):
         add_live_ball(6, False, "6 runs")
+        refresh_session_line()
         st.rerun()
 
 with button_row7:
     if st.button("🔴 Wicket", use_container_width=True):
         add_live_ball(0, True, "Wicket")
+        refresh_session_line()
         st.rerun()
 
 with button_row8:
     if st.button("↩ Undo", use_container_width=True):
         undo_live_ball()
+        refresh_session_line()
         st.rerun()
 
-# -------- live details --------
+# Match details
 st.subheader("📊 Match Detail")
 
 detail1, detail2, detail3, detail4 = st.columns(4)
@@ -875,6 +1046,72 @@ with detail3:
     st.markdown(f"<div class='card'><strong>Ground</strong><br>{venue}</div>", unsafe_allow_html=True)
 with detail4:
     st.markdown(f"<div class='card'><strong>Innings</strong><br>{innings_label}</div>", unsafe_allow_html=True)
+
+# Session engine display
+if not st.session_state.manual_session_mode:
+    refresh_session_line()
+
+session_low = int(st.session_state.session_low)
+session_high = int(st.session_state.session_high)
+
+st.markdown(
+    f"""
+    <div class="session-box">
+        <h3>📈 Session Engine</h3>
+        <h2>{session_low}-{session_high}</h2>
+        <p class="small">
+            Expected score: {st.session_state.session_expected:.1f}
+            • Session over: {st.session_state.session_over}
+            • Mode: {('Manual' if st.session_state.manual_session_mode else 'Auto')}
+            • Note: {st.session_state.session_note}
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+manual_col1, manual_col2, manual_col3 = st.columns(3)
+with manual_col1:
+    st.session_state.manual_session_low = st.number_input(
+        "Manual Session Low",
+        min_value=0,
+        max_value=200,
+        value=int(st.session_state.session_low or 0),
+        step=1,
+        key="manual_low_input",
+    )
+
+with manual_col2:
+    st.session_state.manual_session_high = st.number_input(
+        "Manual Session High",
+        min_value=0,
+        max_value=200,
+        value=int(st.session_state.session_high or 0),
+        step=1,
+        key="manual_high_input",
+    )
+
+with manual_col3:
+    st.session_state.manual_session_note = st.text_input(
+        "Manual session note",
+        value=st.session_state.manual_session_note or "",
+        key="manual_session_note",
+    )
+
+manual_action1, manual_action2 = st.columns(2)
+with manual_action1:
+    if st.button("✅ Apply Manual Session Line", use_container_width=True):
+        apply_manual_session_line(
+            st.session_state.manual_session_low,
+            st.session_state.manual_session_high,
+            st.session_state.manual_session_note or "User override"
+        )
+        st.rerun()
+
+with manual_action2:
+    if st.button("🔁 Auto Session", use_container_width=True):
+        reset_manual_session()
+        st.rerun()
 
 # ---------------- LIVE TREND ----------------
 
@@ -905,7 +1142,6 @@ def estimate_live_trend():
     )
 
     x = x.sort_values("d").head(80)
-
     return {
         "runs_last6": float(x.runs_last6.mean()),
         "runs_last12": float(x.runs_last12.mean()),
@@ -922,7 +1158,6 @@ def session_candidates():
         return pd.DataFrame(), "No usable historical data"
 
     current_phase = match_phase(current_ball)
-
     x = history[
         (history.innings_no == innings_no)
         & (history.ball_pos.between(max(1, current_ball - 2), current_ball + 2))
@@ -978,7 +1213,9 @@ def session_candidates():
     )
 
     x["weight"] = x["similarity"].clip(lower=0.03)
-    return x.sort_values("weight", ascending=False).head(1500), "Phase-aware V2: score + wickets + RR + required RR + recent trend + momentum + teams + ground"
+    x = x.sort_values("weight", ascending=False).head(1500)
+
+    return x, "Phase-aware V2: score + wickets + RR + required RR + recent trend + momentum + teams + ground"
 
 
 def add_future_scores(candidates):
@@ -1020,7 +1257,6 @@ def win_candidates():
         return None
 
     current_phase = match_phase(current_ball)
-
     x = history[
         (history.innings_no == innings_no)
         & (history.ball_pos.between(max(1, current_ball - 2), current_ball + 2))
