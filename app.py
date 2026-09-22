@@ -28,6 +28,21 @@ st.set_page_config(
 st.html(
     """
     <style>
+
+    /* REMOVE TOP BLACK STRIP */
+    header[data-testid="stHeader"] {
+        background: transparent !important;
+        height: 0 !important;
+    }
+
+    header[data-testid="stHeader"] > div {
+        display: none !important;
+    }
+
+    [data-testid="stAppViewContainer"] {
+        padding-top: 0 !important;
+    }
+
     .stApp {
         background: linear-gradient(180deg, #061426, #081c35);
         color: #f8fafc;
