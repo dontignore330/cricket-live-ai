@@ -9,11 +9,13 @@ from pathlib import Path
 
 import streamlit as st
 
+
 st.set_page_config(
     page_title="VasuDev Cricket AI",
     page_icon="🐎",
-    layout="wide"
+    layout="wide",
 )
+
 
 PASSWORD = os.environ.get("VASUDEV_PASSWORD", "").strip()
 
@@ -21,64 +23,101 @@ if not PASSWORD:
     st.error("Set VASUDEV_PASSWORD in Render Environment Variables.")
     st.stop()
 
+
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
-st.markdown("""
-<style>
-.stApp{
-    background:linear-gradient(180deg,#061426,#081c35);
-    color:#f8fafc
-}
-.block-container{
-    max-width:1500px;
-    padding-top:1.2rem!important
-}
-.card,.session-box{
-    background:#0f223c;
-    padding:16px;
-    border-radius:16px;
-    border:1px solid #2d4d72
-}
-.session-box{
-    text-align:center;
-    border:2px solid #4777a8;
-    margin:14px 0
-}
-.yes{
-    background:#07552f;
-    border:2px solid #20c77a;
-    padding:18px;
-    border-radius:16px;
-    text-align:center
-}
-.no{
-    background:#651b1b;
-    border:2px solid #ef5350;
-    padding:18px;
-    border-radius:16px;
-    text-align:center
-}
-.small{
-    color:#bed0e5!important;
-    font-size:13px
-}
-h1,h2,h3,h4,p,label{
-    color:#f8fafc!important
-}
-[data-testid="stSidebar"]{
-    background:#071a2e
-}
-div.stButton>button{
-    min-height:40px;
-    border-radius:10px;
-    font-weight:700;
-    background:#12365f;
-    color:#fff;
-    border:1px solid #3c6795
-}
-</style>
-""", unsafe_allow_html=True)
+
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background: linear-gradient(180deg, #061426, #081c35);
+        color: #f8fafc;
+    }
+
+    .block-container {
+        max-width: 1500px;
+        padding-top: 1.2rem !important;
+    }
+
+    .card,
+    .session-box,
+    .winning-box {
+        background: #0f223c;
+        padding: 16px;
+        border-radius: 16px;
+        border: 1px solid #2d4d72;
+    }
+
+    .session-box {
+        text-align: center;
+        border: 2px solid #4777a8;
+        margin: 14px 0;
+    }
+
+    .winning-box {
+        text-align: center;
+        border: 2px solid #e6a700;
+        margin: 14px 0;
+    }
+
+    .yes {
+        background: #07552f;
+        border: 2px solid #20c77a;
+        padding: 18px;
+        border-radius: 16px;
+        text-align: center;
+    }
+
+    .no {
+        background: #651b1b;
+        border: 2px solid #ef5350;
+        padding: 18px;
+        border-radius: 16px;
+        text-align: center;
+    }
+
+    .small {
+        color: #bed0e5 !important;
+        font-size: 13px;
+    }
+
+    h1,
+    h2,
+    h3,
+    h4,
+    p,
+    label {
+        color: #f8fafc !important;
+    }
+
+    [data-testid="stSidebar"] {
+        background: #071a2e;
+    }
+
+    div.stButton > button {
+        min-height: 40px;
+        border-radius: 10px;
+        font-weight: 700;
+        background: #12365f;
+        color: #fff;
+        border: 1px solid #3c6795;
+    }
+
+    /* Ball buttons ke beech ka unwanted gap remove */
+    div[data-testid="stHorizontalBlock"] {
+        gap: 0 !important;
+    }
+
+    div[data-testid="column"] {
+        padding-left: 2px !important;
+        padding-right: 2px !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ============================================================
@@ -86,19 +125,18 @@ div.stButton>button{
 # ============================================================
 
 if not st.session_state.authenticated:
-
     st.title("VasuDev Cricket AI")
 
     password = st.text_input(
         "Password",
         type="password",
-        key="auth_password"
+        key="auth_password",
     )
 
     if st.button(
         "Unlock",
         use_container_width=True,
-        key="unlock"
+        key="unlock",
     ):
         if hmac.compare_digest(password, PASSWORD):
             st.session_state.authenticated = True
@@ -123,11 +161,8 @@ DBS = {
 }
 
 URLS = {
-    "Men's Big Bash League":
-        "https://cricsheet.org/downloads/bbl_json.zip",
-
-    "Women's Big Bash League":
-        "https://cricsheet.org/downloads/wbb_json.zip",
+    "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
+    "Women's Big Bash League": "https://cricsheet.org/downloads/wbb_json.zip",
 }
 
 LEAGUES = list(DBS)
@@ -159,7 +194,7 @@ def display_over(balls):
     if balls <= 0:
         return "0.0"
 
-    return f"{(balls - 1)//6}.{((balls - 1)%6)+1}"
+    return f"{(balls - 1) // 6}.{((balls - 1) % 6) + 1}"
 
 
 # ============================================================
@@ -176,20 +211,15 @@ def table_columns(connection, table):
 
 
 def migrate_database(path):
-    """
-    Permanently repair databases created by previous app versions.
-    """
-
     if not path.exists():
         return
 
     connection = sqlite3.connect(
         str(path),
-        timeout=60
+        timeout=60,
     )
 
     try:
-
         tables = {
             row[0]
             for row in connection.execute(
@@ -200,13 +230,9 @@ def migrate_database(path):
         if "deliveries" not in tables:
             return
 
-        columns = table_columns(
-            connection,
-            "deliveries"
-        )
+        columns = table_columns(connection, "deliveries")
 
         if "ball_pos" not in columns:
-
             connection.execute(
                 "ALTER TABLE deliveries ADD COLUMN ball_pos INTEGER"
             )
@@ -222,7 +248,7 @@ def migrate_database(path):
 
             connection.executemany(
                 "UPDATE deliveries SET ball_pos=? WHERE id=?",
-                updates
+                updates,
             )
 
         connection.execute(
@@ -253,25 +279,19 @@ def migrate_database(path):
 
 
 def readonly(path):
-
     migrate_database(path)
 
     connection = sqlite3.connect(
         f"file:{path.resolve()}?mode=ro",
         uri=True,
         check_same_thread=False,
-        timeout=60
+        timeout=60,
     )
 
     connection.row_factory = sqlite3.Row
 
-    connection.execute(
-        "PRAGMA query_only=ON"
-    )
-
-    connection.execute(
-        "PRAGMA cache_size=-8000"
-    )
+    connection.execute("PRAGMA query_only=ON")
+    connection.execute("PRAGMA cache_size=-8000")
 
     return connection
 
@@ -281,25 +301,16 @@ def readonly(path):
 # ============================================================
 
 def build_database(path, league, archive):
-
     temporary = path.with_suffix(".tmp")
 
     if temporary.exists():
         temporary.unlink()
 
-    connection = sqlite3.connect(
-        str(temporary)
-    )
+    connection = sqlite3.connect(str(temporary))
 
     try:
-
-        connection.execute(
-            "PRAGMA journal_mode=OFF"
-        )
-
-        connection.execute(
-            "PRAGMA synchronous=OFF"
-        )
+        connection.execute("PRAGMA journal_mode=OFF")
+        connection.execute("PRAGMA synchronous=OFF")
 
         connection.execute(
             """
@@ -334,35 +345,19 @@ def build_database(path, league, archive):
         deliveries = []
 
         with zipfile.ZipFile(archive) as source:
-
             for filename in source.namelist():
-
                 if not filename.endswith(".json"):
                     continue
 
                 try:
-
-                    data = json.loads(
-                        source.read(filename)
-                    )
-
-                    info = data.get(
-                        "info",
-                        {}
-                    )
-
-                    teams = info.get(
-                        "teams",
-                        []
-                    )
+                    data = json.loads(source.read(filename))
+                    info = data.get("info", {})
+                    teams = info.get("teams", [])
 
                     if len(teams) < 2:
                         continue
 
-                    outcome = info.get(
-                        "outcome",
-                        {}
-                    ) or {}
+                    outcome = info.get("outcome", {}) or {}
 
                     winner = (
                         outcome.get("winner", "")
@@ -370,36 +365,25 @@ def build_database(path, league, archive):
                         or ""
                     )
 
-                    match_id = Path(
-                        filename
-                    ).stem
+                    match_id = Path(filename).stem
 
                     matches.append(
                         (
                             match_id,
-                            str(
-                                info.get(
-                                    "venue",
-                                    ""
-                                ) or ""
-                            ),
+                            str(info.get("venue", "") or ""),
                             str(winner),
-                            league
+                            league,
                         )
                     )
 
                     for innings_no, innings in enumerate(
                         data.get("innings", []),
-                        1
+                        1,
                     ):
-
                         if innings.get("super_over"):
                             continue
 
-                        batting = innings.get(
-                            "team",
-                            ""
-                        )
+                        batting = innings.get("team", "")
 
                         bowling = next(
                             (
@@ -407,64 +391,43 @@ def build_database(path, league, archive):
                                 for team in teams
                                 if team != batting
                             ),
-                            ""
+                            "",
                         )
 
-                        for over in innings.get(
-                            "overs",
-                            []
-                        ):
-
-                            over_no = int(
-                                over.get(
-                                    "over",
-                                    0
-                                )
-                            )
+                        for over in innings.get("overs", []):
+                            over_no = int(over.get("over", 0))
 
                             for delivery in over.get(
                                 "deliveries",
-                                []
+                                [],
                             ):
-
                                 value = delivery.get(
                                     "actual_delivery"
                                 )
 
                                 if not value:
-
                                     try:
-
                                         value = (
                                             f"{over_no}."
                                             f"{int(delivery.get('ball'))}"
                                         )
-
                                     except Exception:
                                         continue
 
-                                position = parse_ball(
-                                    value
-                                )
+                                position = parse_ball(value)
 
                                 if position is None:
                                     continue
 
                                 runs = int(
                                     (
-                                        delivery.get(
-                                            "runs"
-                                        ) or {}
-                                    ).get(
-                                        "total",
-                                        0
-                                    ) or 0
+                                        delivery.get("runs") or {}
+                                    ).get("total", 0)
+                                    or 0
                                 )
 
                                 wickets = len(
-                                    delivery.get(
-                                        "wickets"
-                                    ) or []
+                                    delivery.get("wickets") or []
                                 )
 
                                 deliveries.append(
@@ -478,24 +441,21 @@ def build_database(path, league, archive):
                                         position,
                                         runs,
                                         wickets,
-                                        league
+                                        league,
                                     )
                                 )
 
                     if len(matches) >= 100:
-
                         connection.executemany(
                             """
                             INSERT OR REPLACE INTO matches
                             VALUES(?,?,?,?)
                             """,
-                            matches
+                            matches,
                         )
-
                         matches.clear()
 
                     if len(deliveries) >= 5000:
-
                         connection.executemany(
                             """
                             INSERT INTO deliveries(
@@ -512,26 +472,23 @@ def build_database(path, league, archive):
                             )
                             VALUES(?,?,?,?,?,?,?,?,?,?)
                             """,
-                            deliveries
+                            deliveries,
                         )
-
                         deliveries.clear()
 
                 except Exception:
                     continue
 
         if matches:
-
             connection.executemany(
                 """
                 INSERT OR REPLACE INTO matches
                 VALUES(?,?,?,?)
                 """,
-                matches
+                matches,
             )
 
         if deliveries:
-
             connection.executemany(
                 """
                 INSERT INTO deliveries(
@@ -548,7 +505,7 @@ def build_database(path, league, archive):
                 )
                 VALUES(?,?,?,?,?,?,?,?,?,?)
                 """,
-                deliveries
+                deliveries,
             )
 
         connection.execute(
@@ -578,47 +535,36 @@ def build_database(path, league, archive):
 # ============================================================
 
 def ensure_database(league):
-
     path = DBS[league]
 
     if path.exists():
-
         migrate_database(path)
-
         return path
 
     if league == "IPL":
         return path
 
-    building = path.with_suffix(
-        ".building"
-    )
+    building = path.with_suffix(".building")
 
     try:
-
         with tempfile.TemporaryDirectory() as directory:
-
-            archive = Path(
-                directory
-            ) / "matches.zip"
+            archive = Path(directory) / "matches.zip"
 
             urllib.request.urlretrieve(
                 URLS[league],
-                archive
+                archive,
             )
 
             build_database(
                 building,
                 league,
-                archive
+                archive,
             )
 
         building.replace(path)
-
         return path
 
     except Exception:
-
         if building.exists():
             building.unlink()
 
@@ -632,10 +578,7 @@ def ensure_database(league):
 def values(connection, sql, league):
     return [
         row[0]
-        for row in connection.execute(
-            sql,
-            (league,)
-        ).fetchall()
+        for row in connection.execute(sql, (league,)).fetchall()
         if row[0]
     ]
 
@@ -644,18 +587,12 @@ def values(connection, sql, league):
 # SCORE
 # ============================================================
 
-def score_at(
-    connection,
-    match_id,
-    innings_no,
-    end_ball
-):
-
+def score_at(connection, match_id, innings_no, end_ball):
     row = connection.execute(
         """
         SELECT
-            COALESCE(SUM(runs),0),
-            COALESCE(SUM(wickets),0)
+            COALESCE(SUM(runs), 0),
+            COALESCE(SUM(wickets), 0)
         FROM deliveries
         WHERE match_id=?
         AND innings_no=?
@@ -664,13 +601,13 @@ def score_at(
         (
             match_id,
             innings_no,
-            end_ball
-        )
+            end_ball,
+        ),
     ).fetchone()
 
     return (
         int(row[0] or 0),
-        int(row[1] or 0)
+        int(row[1] or 0),
     )
 
 
@@ -685,9 +622,8 @@ def similar_matches(
     current_ball,
     current_runs,
     current_wickets,
-    end_ball
+    end_ball,
 ):
-
     rows = connection.execute(
         """
         SELECT DISTINCT
@@ -706,60 +642,42 @@ def similar_matches(
             innings_no,
             max(1, current_ball - 2),
             current_ball + 2,
-            end_ball
-        )
+            end_ball,
+        ),
     ).fetchall()
 
     result = []
 
     for row in rows:
-
         score, wickets = score_at(
             connection,
             row["match_id"],
             row["innings_no"],
-            row["ball_pos"]
+            row["ball_pos"],
         )
 
         if (
             abs(score - current_runs) <= 30
-            and
-            abs(wickets - current_wickets) <= 3
+            and abs(wickets - current_wickets) <= 3
         ):
-
             weight = (
                 1
-                /
-                (
-                    1
-                    + abs(score - current_runs)
-                )
-                /
-                (
-                    1
-                    + abs(wickets - current_wickets)
-                )
-                /
-                (
-                    1
-                    + abs(
-                        row["ball_pos"]
-                        - current_ball
-                    )
-                )
+                / (1 + abs(score - current_runs))
+                / (1 + abs(wickets - current_wickets))
+                / (1 + abs(row["ball_pos"] - current_ball))
             )
 
             result.append(
                 (
                     row["match_id"],
                     int(row["innings_no"]),
-                    weight
+                    weight,
                 )
             )
 
     result.sort(
         key=lambda item: item[2],
-        reverse=True
+        reverse=True,
     )
 
     return result[:800]
@@ -776,18 +694,16 @@ def calculate_line(
     current_ball,
     current_runs,
     current_wickets,
-    session_over
+    session_over,
 ):
-
     end_ball = int(session_over) * 6
 
     if current_ball >= end_ball:
-
         return (
             current_runs,
             current_runs + 1,
             float(current_runs),
-            0
+            0,
         )
 
     matches = similar_matches(
@@ -797,29 +713,27 @@ def calculate_line(
         current_ball,
         current_runs,
         current_wickets,
-        end_ball
+        end_ball,
     )
 
     if not matches:
-
         return (
             current_runs,
             current_runs + 1,
             float(current_runs),
-            0
+            0,
         )
 
     scores = []
     weights = []
 
     for match_id, inn, weight in matches:
-
         scores.append(
             score_at(
                 connection,
                 match_id,
                 inn,
-                end_ball
+                end_ball,
             )[0]
         )
 
@@ -828,23 +742,21 @@ def calculate_line(
     expected = (
         sum(
             score * weight
-            for score, weight
-            in zip(scores, weights)
+            for score, weight in zip(scores, weights)
         )
-        /
-        sum(weights)
+        / sum(weights)
     )
 
     low = max(
         current_runs,
-        int(round(expected))
+        int(round(expected)),
     )
 
     return (
         low,
         low + 1,
         expected,
-        len(scores)
+        len(scores),
     )
 
 
@@ -860,9 +772,8 @@ def calculate_result(
     current_runs,
     current_wickets,
     session_over,
-    threshold
+    threshold,
 ):
-
     end_ball = int(session_over) * 6
 
     matches = similar_matches(
@@ -872,7 +783,7 @@ def calculate_result(
         current_ball,
         current_runs,
         current_wickets,
-        end_ball
+        end_ball,
     )
 
     if not matches:
@@ -883,21 +794,18 @@ def calculate_result(
             connection,
             match_id,
             inn,
-            end_ball
+            end_ball,
         )[0]
-        for match_id, inn, _
-        in matches
+        for match_id, inn, _ in matches
     ]
 
+    if not scores:
+        return None
+
     yes = (
-        sum(
-            score >= threshold
-            for score in scores
-        )
-        /
-        len(scores)
-        *
-        100
+        sum(score >= threshold for score in scores)
+        / len(scores)
+        * 100
     )
 
     ordered = sorted(scores)
@@ -908,17 +816,11 @@ def calculate_result(
         "samples": len(scores),
         "expected": sum(scores) / len(scores),
         "low": ordered[
-            max(
-                0,
-                int(len(ordered) * 0.1) - 1
-            )
+            max(0, int(len(ordered) * 0.1) - 1)
         ],
         "high": ordered[
-            max(
-                0,
-                int(len(ordered) * 0.9) - 1
-            )
-        ]
+            max(0, int(len(ordered) * 0.9) - 1)
+        ],
     }
 
 
@@ -938,13 +840,9 @@ for key, value in {
     "high": 1,
     "expected": 0.0,
     "manual": False,
-    "analysis": None
+    "analysis": None,
 }.items():
-
-    st.session_state.setdefault(
-        key,
-        value
-    )
+    st.session_state.setdefault(key, value)
 
 
 # ============================================================
@@ -952,33 +850,21 @@ for key, value in {
 # ============================================================
 
 with st.sidebar:
-
     league = st.selectbox(
         "League",
         LEAGUES,
-        key="league_choice"
+        key="league_choice",
     )
 
     try:
-
-        database_path = ensure_database(
-            league
-        )
-
-        connection = readonly(
-            database_path
-        )
+        database_path = ensure_database(league)
+        connection = readonly(database_path)
 
     except Exception as error:
-
         st.error(
             f"Historical database could not be prepared: {error}"
         )
-
         st.stop()
-
-    # FIXED:
-    # league argument is passed correctly.
 
     teams = values(
         connection,
@@ -988,11 +874,8 @@ with st.sidebar:
         WHERE league=?
         ORDER BY batting_team
         """,
-        league
+        league,
     )
-
-    # FIXED:
-    # Previously league argument was missing here.
 
     venues = values(
         connection,
@@ -1003,46 +886,44 @@ with st.sidebar:
         AND venue<>''
         ORDER BY venue
         """,
-        league
+        league,
     ) or ["Unknown"]
 
     if not teams:
-
-        st.error(
-            "No teams found in database."
-        )
-
+        st.error("No teams found in database.")
         st.stop()
 
     batting = st.selectbox(
         "Batting Team",
         teams,
-        key="batting_team"
+        key="batting_team",
     )
+
+    bowling_options = [
+        team
+        for team in teams
+        if team != batting
+    ]
 
     bowling = st.selectbox(
         "Bowling Team",
-        [
-            x
-            for x in teams
-            if x != batting
-        ],
-        key="bowling_team"
+        bowling_options,
+        key="bowling_team",
     )
 
     venue = st.selectbox(
         "Ground",
         venues,
-        key="ground"
+        key="ground",
     )
 
     innings_label = st.selectbox(
         "Innings",
         [
             "1st Innings",
-            "2nd Innings"
+            "2nd Innings",
         ],
-        key="innings"
+        key="innings",
     )
 
     innings_no = (
@@ -1055,39 +936,29 @@ with st.sidebar:
         "Session Over",
         1,
         20,
-        int(
-            st.session_state.session_over
-        ),
+        int(st.session_state.session_over),
         1,
-        key="session_over_input"
+        key="session_over_input",
     )
 
     target = st.number_input(
         "Target Runs",
         0,
         400,
-        int(
-            st.session_state.target
-        ),
+        int(st.session_state.target),
         1,
-        key="target_input"
+        key="target_input",
     )
 
-    st.session_state.session_over = int(
-        session_over
-    )
-
-    st.session_state.target = int(
-        target
-    )
+    st.session_state.session_over = int(session_over)
+    st.session_state.target = int(target)
 
     points = (
         ["0.0"]
-        +
-        [
-            f"{o}.{b}"
-            for o in range(20)
-            for b in range(1, 7)
+        + [
+            f"{over}.{ball}"
+            for over in range(20)
+            for ball in range(1, 7)
         ]
     )
 
@@ -1095,7 +966,7 @@ with st.sidebar:
         "Start Over / Ball",
         points,
         index=19,
-        key="start_over"
+        key="start_over",
     )
 
     start_runs = st.number_input(
@@ -1104,7 +975,7 @@ with st.sidebar:
         400,
         16,
         1,
-        key="start_runs"
+        key="start_runs",
     )
 
     start_wickets = st.number_input(
@@ -1113,51 +984,33 @@ with st.sidebar:
         10,
         1,
         1,
-        key="start_wickets"
+        key="start_wickets",
     )
 
     if st.button(
         "Set Current Match Situation",
         use_container_width=True,
-        key="set_situation"
+        key="set_situation",
     ):
-
-        st.session_state.runs = int(
-            start_runs
-        )
-
-        st.session_state.wickets = int(
-            start_wickets
-        )
-
-        st.session_state.balls = (
-            parse_ball(start_over)
-            or 0
-        )
-
+        st.session_state.runs = int(start_runs)
+        st.session_state.wickets = int(start_wickets)
+        st.session_state.balls = parse_ball(start_over) or 0
         st.session_state.undo = []
-
-        st.session_state.last = (
-            "Starting situation set"
-        )
-
+        st.session_state.last = "Starting situation set"
         st.session_state.analysis = None
-
         st.rerun()
 
     if st.button(
         "Reset Live Situation",
         use_container_width=True,
-        key="reset_live"
+        key="reset_live",
     ):
-
         st.session_state.runs = 0
         st.session_state.wickets = 0
         st.session_state.balls = 0
         st.session_state.undo = []
         st.session_state.last = ""
         st.session_state.analysis = None
-
         st.rerun()
 
 
@@ -1165,18 +1018,9 @@ with st.sidebar:
 # CURRENT STATE
 # ============================================================
 
-runs = int(
-    st.session_state.runs
-)
-
-wickets = int(
-    st.session_state.wickets
-)
-
-balls = int(
-    st.session_state.balls
-)
-
+runs = int(st.session_state.runs)
+wickets = int(st.session_state.wickets)
+balls = int(st.session_state.balls)
 
 low, high, expected, samples = calculate_line(
     connection,
@@ -1185,14 +1029,33 @@ low, high, expected, samples = calculate_line(
     balls,
     runs,
     wickets,
-    session_over
+    session_over,
 )
 
 if not st.session_state.manual:
-
     st.session_state.low = low
     st.session_state.high = high
     st.session_state.expected = expected
+
+
+# ============================================================
+# AUTOMATIC RESULT CALCULATION
+# ============================================================
+
+# Analyze button ki zaroorat nahi.
+# Har Streamlit rerun ke baad result automatically calculate hoga.
+session_analysis = calculate_result(
+    connection,
+    league,
+    innings_no,
+    balls,
+    runs,
+    wickets,
+    session_over,
+    int(st.session_state.high),
+)
+
+st.session_state.analysis = session_analysis
 
 
 # ============================================================
@@ -1201,10 +1064,10 @@ if not st.session_state.manual:
 
 st.markdown(
     f"""
-    <div class='card'>
+    <div class="card">
         <h3>Current Live Score</h3>
         <h2>{runs}/{wickets}</h2>
-        <p class='small'>
+        <p class="small">
             Over/Ball: {display_over(balls)}
             • Target: {target or 'Not set'}
             • Session over: {session_over}
@@ -1212,7 +1075,7 @@ st.markdown(
         </p>
     </div>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
 
@@ -1220,9 +1083,7 @@ st.markdown(
 # BALL BY BALL
 # ============================================================
 
-st.subheader(
-    "Ball-by-Ball Update"
-)
+st.subheader("Ball-by-Ball Update")
 
 buttons = [
     ("Dot", 0, False),
@@ -1232,63 +1093,47 @@ buttons = [
     ("4 Runs", 4, False),
     ("6 Runs", 6, False),
     ("Wicket", 0, True),
-    ("Undo", None, False)
+    ("Undo", None, False),
 ]
 
-for index, (
-    label,
-    run_value,
-    wicket
-) in enumerate(buttons):
+button_columns = st.columns(4, gap="small")
 
-    with st.columns(4)[index % 4]:
-
+for index, (label, run_value, wicket) in enumerate(buttons):
+    with button_columns[index % 4]:
         if st.button(
             label,
             use_container_width=True,
-            key=f"ball_{index}"
+            key=f"ball_{index}",
         ):
-
-            if (
-                label == "Undo"
-                and st.session_state.undo
-            ):
-
+            if label == "Undo" and st.session_state.undo:
                 (
                     st.session_state.runs,
                     st.session_state.wickets,
                     st.session_state.balls,
-                    _
+                    st.session_state.last,
                 ) = st.session_state.undo.pop()
 
-                st.session_state.last = "Undo"
-
             elif label != "Undo":
-
                 st.session_state.undo.append(
                     (
                         runs,
                         wickets,
                         balls,
-                        st.session_state.last
+                        st.session_state.last,
                     )
                 )
 
-                st.session_state.runs += int(
-                    run_value
-                )
-
+                st.session_state.runs += int(run_value)
                 st.session_state.wickets = min(
                     10,
-                    wickets + int(wicket)
+                    wickets + int(wicket),
                 )
-
                 st.session_state.balls += 1
-
                 st.session_state.last = label
 
             st.session_state.analysis = None
 
+            # Ball update ke turant baad session aur winning result update.
             st.rerun()
 
 
@@ -1296,142 +1141,65 @@ for index, (
 # MATCH DETAIL
 # ============================================================
 
-st.subheader(
-    "Match Detail"
-)
+st.subheader("Match Detail")
 
 detail = st.columns(4)
 
-detail[0].metric(
-    "Batting",
-    batting
-)
-
-detail[1].metric(
-    "Bowling",
-    bowling
-)
-
-detail[2].metric(
-    "Ground",
-    venue
-)
-
-detail[3].metric(
-    "Innings",
-    innings_label
-)
+detail[0].metric("Batting", batting)
+detail[1].metric("Bowling", bowling)
+detail[2].metric("Ground", venue)
+detail[3].metric("Innings", innings_label)
 
 
 # ============================================================
-# SESSION
+# SESSION BOX
 # ============================================================
 
-st.markdown(
-    f"""
-    <div class='session-box'>
-        <h3>Session</h3>
-        <h2>
-            {int(st.session_state.low)}
-            -
-            {int(st.session_state.high)}
-        </h2>
-        <p class='small'>
-            Expected:
-            {float(st.session_state.expected):.1f}
-            • Over:
-            {session_over}
-            • Target:
-            {target or 'Not set'}
-            • Samples:
-            {samples}
-        </p>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+session_data = st.session_state.analysis
 
+if session_data:
+    session_yes = float(session_data["yes"])
+    session_no = float(session_data["no"])
 
-# ============================================================
-# MANUAL SESSION
-# ============================================================
+    session_result = max(session_yes, session_no)
 
-manual = st.columns(2)
-
-with manual[0]:
-
-    manual_low = st.number_input(
-        "Manual Session Low",
-        0,
-        400,
-        int(st.session_state.low),
-        1,
-        key="manual_low"
+    st.markdown(
+        f"""
+        <div class="session-box">
+            <h3>Session Result</h3>
+            <h2>{session_result:.1f}%</h2>
+            <p class="small">
+                Session Line:
+                <b>{int(st.session_state.low)} - {int(st.session_state.high)}</b>
+            </p>
+            <p class="small">
+                Avg Score: <b>{session_data["expected"]:.1f}</b>
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-with manual[1]:
-
-    manual_high = st.number_input(
-        "Manual Session High",
-        0,
-        400,
-        int(st.session_state.high),
-        1,
-        key="manual_high"
+else:
+    st.markdown(
+        """
+        <div class="session-box">
+            <h3>Session Result</h3>
+            <h2>Calculating...</h2>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
 
-a, b = st.columns(2)
-
-with a:
-
-    if st.button(
-        "Apply Manual Session",
-        use_container_width=True,
-        key="apply_manual"
-    ):
-
-        st.session_state.manual = True
-
-        st.session_state.low = int(
-            manual_low
-        )
-
-        st.session_state.high = max(
-            int(manual_low) + 1,
-            int(manual_high)
-        )
-
-        st.session_state.analysis = None
-
-        st.rerun()
-
-
-with b:
-
-    if st.button(
-        "Use Auto Session",
-        use_container_width=True,
-        key="auto"
-    ):
-
-        st.session_state.manual = False
-        st.session_state.analysis = None
-
-        st.rerun()
-
-
 # ============================================================
-# ANALYZE
+# TEAM WINNING BOX
 # ============================================================
 
-if st.button(
-    "Analyze Current Situation",
-    use_container_width=True,
-    key="analyze"
-):
+winning_data = None
 
-    st.session_state.analysis = calculate_result(
+if target > 0:
+    winning_data = calculate_result(
         connection,
         league,
         innings_no,
@@ -1439,89 +1207,155 @@ if st.button(
         runs,
         wickets,
         session_over,
-        int(st.session_state.high)
+        int(target),
     )
-
-    st.rerun()
-
-
-# ============================================================
-# RESULT
-# ============================================================
-
-if st.session_state.analysis is None:
-
-    st.info(
-        "Enter the match situation and press Analyze Current Situation."
-    )
-
 else:
+    winning_data = session_data
 
-    data = st.session_state.analysis
 
-    yes = float(
-        data["yes"]
-    )
+if winning_data:
+    batting_probability = float(winning_data["yes"])
+    bowling_probability = float(winning_data["no"])
 
-    no = float(
-        data["no"]
-    )
-
-    label = (
-        "YES"
-        if yes >= no
-        else "NO"
-    )
-
-    css = (
-        "yes"
-        if label == "YES"
-        else "no"
-    )
-
-    st.subheader(
-        "VasuDev Result"
-    )
+    if batting_probability >= bowling_probability:
+        winning_team = batting
+        winning_probability = batting_probability
+        winning_css = "yes"
+    else:
+        winning_team = bowling
+        winning_probability = bowling_probability
+        winning_css = "no"
 
     st.markdown(
         f"""
-        <div class='{css}'>
-            <h1>
-                {label} — {max(yes, no):.1f}%
-            </h1>
+        <div class="winning-box">
+            <h3>Team Winning</h3>
+            <div class="{winning_css}">
+                <h2>{winning_team}</h2>
+                <h1>{winning_probability:.1f}%</h1>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+else:
+    st.markdown(
+        """
+        <div class="winning-box">
+            <h3>Team Winning</h3>
+            <h2>Calculating...</h2>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
+
+# ============================================================
+# MANUAL SESSION
+# ============================================================
+
+st.subheader("Manual Session")
+
+manual_columns = st.columns(2)
+
+with manual_columns[0]:
+    manual_low = st.number_input(
+        "Manual Session Low",
+        0,
+        400,
+        int(st.session_state.low),
+        1,
+        key="manual_low",
+    )
+
+with manual_columns[1]:
+    manual_high = st.number_input(
+        "Manual Session High",
+        0,
+        400,
+        int(st.session_state.high),
+        1,
+        key="manual_high",
+    )
+
+manual_actions = st.columns(2)
+
+with manual_actions[0]:
+    if st.button(
+        "Apply Manual Session",
+        use_container_width=True,
+        key="apply_manual",
+    ):
+        st.session_state.manual = True
+        st.session_state.low = int(manual_low)
+        st.session_state.high = max(
+            int(manual_low) + 1,
+            int(manual_high),
+        )
+        st.session_state.analysis = None
+        st.rerun()
+
+with manual_actions[1]:
+    if st.button(
+        "Use Auto Session",
+        use_container_width=True,
+        key="auto",
+    ):
+        st.session_state.manual = False
+        st.session_state.analysis = None
+        st.rerun()
+
+
+# ============================================================
+# RESULT DETAILS
+# ============================================================
+
+if session_data:
+    yes = float(session_data["yes"])
+    no = float(session_data["no"])
+
+    result_label = "YES" if yes >= no else "NO"
+    result_css = "yes" if result_label == "YES" else "no"
+
+    st.subheader("VasuDev Result")
+
+    st.markdown(
+        f"""
+        <div class="{result_css}">
+            <h1>{result_label} — {max(yes, no):.1f}%</h1>
             <p>
-                Session line:
+                Session Line:
                 <b>
                     {int(st.session_state.low)}
                     -
                     {int(st.session_state.high)}
                 </b>
-                •
-                {data['samples']}
-                similar states
+            </p>
+            <p>
+                Avg Score:
+                <b>{session_data["expected"]:.1f}</b>
             </p>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
     st.caption(
         "Historical estimate only; it is not a guarantee."
     )
 
-    with st.expander(
-        "Details"
-    ):
-
+    with st.expander("Details"):
         st.write(
-            f"Expected score: **{data['expected']:.1f}**"
+            f"Expected score: **{session_data['expected']:.1f}**"
         )
 
         st.write(
-            f"Historical range: **{int(data['low'])}–{int(data['high'])}**"
+            f"Historical range: "
+            f"**{int(session_data['low'])}–"
+            f"{int(session_data['high'])}**"
         )
 
         st.write(
-            f"YES: **{yes:.1f}%** • NO: **{no:.1f}%**"
+            f"YES: **{yes:.1f}%** • "
+            f"NO: **{no:.1f}%**"
         )
