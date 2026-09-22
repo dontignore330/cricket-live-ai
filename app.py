@@ -9,6 +9,7 @@ from pathlib import Path
 
 import streamlit as st
 
+
 st.set_page_config(
     page_title="VasuDev Cricket AI",
     page_icon="🐎",
@@ -37,55 +38,38 @@ st.markdown(
         padding-top: 1rem !important;
     }
 
-    .card {
-        background: #0f223c;
-        border: 1px solid #2d4d72;
-        border-radius: 16px;
-        padding: 16px 18px;
-        min-height: 120px;
-        box-shadow: 0 12px 24px rgba(0,0,0,0.15);
-    }
-
-    .box {
-        background: #0f223c;
-        border: 1px solid #2d4d72;
-        border-radius: 16px;
-        padding: 14px 16px;
-        min-height: 120px;
-        text-align: center;
-    }
-
-    .session-box {
-        background: #0f223c;
-        border: 2px solid #4777a8;
-        border-radius: 16px;
-        padding: 18px 14px;
-        text-align: center;
-        margin-top: 6px;
-    }
-
+    .live-card,
+    .session-box,
     .winning-box {
         background: #0f223c;
-        border: 2px solid #b78d26;
         border-radius: 16px;
-        padding: 18px 14px;
+        padding: 16px;
+        border: 1px solid #2d4d72;
         text-align: center;
-        margin-top: 6px;
+    }
+
+    .live-card {
+        min-height: 150px;
+    }
+
+    .session-box,
+    .winning-box {
+        min-height: 245px;
     }
 
     .yes {
-        background: #0a5d34;
-        border: 2px solid #22c55e;
+        background: #07552f;
+        border: 2px solid #20c77a;
         border-radius: 12px;
-        padding: 14px 12px;
+        padding: 14px;
         text-align: center;
     }
 
     .no {
-        background: #5b1a1a;
-        border: 2px solid #ef4444;
+        background: #651b1b;
+        border: 2px solid #ef5350;
         border-radius: 12px;
-        padding: 14px 12px;
+        padding: 14px;
         text-align: center;
     }
 
@@ -103,7 +87,7 @@ st.markdown(
     }
 
     div.stButton > button {
-        min-height: 40px;
+        min-height: 42px;
         border-radius: 10px;
         font-weight: 700;
         background: #12365f;
@@ -111,15 +95,8 @@ st.markdown(
         border: 1px solid #3c6795;
     }
 
-    .stRadio [data-baseweb="radio"] > div {
-        background: #0d233d;
-        border-radius: 10px;
-        padding: 6px 10px;
-    }
-
-    /* Remove unnecessary gaps between ball buttons */
     div[data-testid="stHorizontalBlock"] {
-        gap: 0.25rem !important;
+        gap: 0.35rem !important;
     }
 
     div[data-testid="column"] {
@@ -158,7 +135,6 @@ if not st.session_state.authenticated:
 
     st.stop()
 
-
 # ============================================================
 # DATABASE SETTINGS
 # ============================================================
@@ -177,7 +153,6 @@ URLS = {
 }
 
 LEAGUES = list(DBS)
-
 
 # ============================================================
 # BALL PARSING
@@ -205,7 +180,6 @@ def display_over(balls):
         return "0.0"
 
     return f"{(balls - 1) // 6}.{((balls - 1) % 6) + 1}"
-
 
 # ============================================================
 # DATABASE HELPERS
@@ -300,7 +274,6 @@ def readonly(path):
     connection.execute("PRAGMA cache_size=-8000")
 
     return connection
-
 
 # ============================================================
 # DATABASE BUILDER
@@ -498,7 +471,6 @@ def build_database(path, league, archive):
 
     temporary.replace(path)
 
-
 # ============================================================
 # ENSURE DATABASE
 # ============================================================
@@ -529,7 +501,6 @@ def ensure_database(league):
             building.unlink()
         raise
 
-
 # ============================================================
 # VALUES HELPER
 # ============================================================
@@ -540,7 +511,6 @@ def values(connection, sql, league):
         for row in connection.execute(sql, (league,)).fetchall()
         if row[0]
     ]
-
 
 # ============================================================
 # SCORE
@@ -564,7 +534,6 @@ def score_at(connection, match_id, innings_no, end_ball):
         int(row[0] or 0),
         int(row[1] or 0),
     )
-
 
 # ============================================================
 # SIMILAR HISTORICAL MATCHES
@@ -626,7 +595,6 @@ def similar_matches(
 
     result.sort(key=lambda item: item[2], reverse=True)
     return result[:800]
-
 
 # ============================================================
 # SESSION CALCULATION
@@ -690,7 +658,6 @@ def calculate_line(
         len(scores),
     )
 
-
 # ============================================================
 # RESULT CALCULATION
 # ============================================================
@@ -743,7 +710,6 @@ def calculate_result(
         "high": ordered[max(0, int(len(ordered) * 0.9) - 1)],
     }
 
-
 # ============================================================
 # SESSION STATE DEFAULTS
 # ============================================================
@@ -764,7 +730,6 @@ for key, value in {
     "session_mode": "Auto",
 }.items():
     st.session_state.setdefault(key, value)
-
 
 # ============================================================
 # SIDEBAR
@@ -905,7 +870,6 @@ with st.sidebar:
         st.session_state.analysis = None
         st.rerun()
 
-
 # ============================================================
 # CURRENT STATE
 # ============================================================
@@ -930,7 +894,7 @@ if not st.session_state.manual:
     st.session_state.expected = expected
 
 # ============================================================
-# AUTO SESSION + MANUAL SESSION
+# SESSION MODE
 # ============================================================
 
 mode = st.radio(
@@ -941,15 +905,10 @@ mode = st.radio(
     key="session_mode",
 )
 
-st.session_state.session_mode = mode
-
-if mode == "Manual":
-    st.session_state.manual = True
-else:
-    st.session_state.manual = False
+st.session_state.manual = mode == "Manual"
 
 # ============================================================
-# AUTO RESULT CALCULATION
+# AUTOMATIC RESULT
 # ============================================================
 
 session_analysis = calculate_result(
@@ -965,178 +924,227 @@ session_analysis = calculate_result(
 
 st.session_state.analysis = session_analysis
 
-
 # ============================================================
-# TOP LIVE BOX + BALL BUTTONS
+# TOP LIVE SCORE + BALL BUTTONS
 # ============================================================
 
-top_left, top_right = st.columns([1, 3], gap="small")
+top_score, top_buttons = st.columns([1, 4], gap="small")
 
-with top_left:
+with top_score:
     st.markdown(
         f"""
-        <div class="card">
-            <div style="font-size:14px; color:#bed0e5; margin-bottom:6px;">Live Score</div>
-            <div style="font-size:32px; font-weight:800; line-height:1.2;">{batting}</div>
-            <div style="font-size:28px; font-weight:700; margin-top:8px;">{runs}/{wickets}</div>
-            <div style="font-size:14px; color:#bed0e5; margin-top:8px;">{display_over(balls)} ov</div>
+        <div class="live-card">
+            <div class="small">Live Score</div>
+            <h2 style="margin:8px 0 4px 0;">{batting}</h2>
+            <h1 style="margin:0;">{runs}/{wickets}</h1>
+            <p class="small" style="margin-top:8px;">{display_over(balls)} ov</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-with top_right:
+with top_buttons:
+    st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+
     ball_buttons = [
-        ("Dot", 0, False),
-        ("1", 1, False),
-        ("2", 2, False),
-        ("4", 4, False),
-        ("6", 6, False),
-        ("Wicket", 0, True),
-        ("Wide", 1, False),
-        ("No Ball", 1, False),
+        ("Dot", 0, False, True),
+        ("1", 1, False, True),
+        ("2", 2, False, True),
+        ("4", 4, False, True),
+        ("6", 6, False, True),
+        ("Wkt", 0, True, True),
+        ("Wide", 1, False, False),
+        ("No Ball", 1, False, False),
     ]
 
-    btn_cols = st.columns(8, gap="small")
+    button_columns = st.columns(8, gap="small")
 
-    for i, (label, run_value, wicket) in enumerate(ball_buttons):
-        with btn_cols[i]:
-            if st.button(label, use_container_width=True, key=f"ball_{i}"):
-                if label == "Wide" or label == "No Ball":
-                    st.session_state.undo.append((runs, wickets, balls, st.session_state.last))
-                    st.session_state.runs += int(run_value)
-                    st.session_state.last = label
-                    st.session_state.analysis = None
-                    st.rerun()
+    for index, (label, run_value, wicket, legal_ball) in enumerate(ball_buttons):
+        with button_columns[index]:
+            if st.button(
+                label,
+                use_container_width=True,
+                key=f"live_ball_{index}",
+            ):
+                st.session_state.undo.append(
+                    (
+                        runs,
+                        wickets,
+                        balls,
+                        st.session_state.last,
+                    )
+                )
 
-                elif label == "Wicket":
-                    st.session_state.undo.append((runs, wickets, balls, st.session_state.last))
-                    st.session_state.wickets = min(10, wickets + 1)
+                st.session_state.runs += int(run_value)
+
+                if wicket:
+                    st.session_state.wickets = min(
+                        10,
+                        wickets + 1,
+                    )
+
+                if legal_ball:
                     st.session_state.balls += 1
-                    st.session_state.last = "Wicket"
-                    st.session_state.analysis = None
-                    st.rerun()
 
-                else:
-                    st.session_state.undo.append((runs, wickets, balls, st.session_state.last))
-                    st.session_state.runs += int(run_value)
-                    st.session_state.balls += 1
-                    st.session_state.last = label
-                    st.session_state.analysis = None
-                    st.rerun()
+                st.session_state.last = label
+                st.session_state.analysis = None
+                st.rerun()
 
-    if st.button("Undo", use_container_width=True, key="btn_undo"):
+    if st.button(
+        "Undo",
+        use_container_width=True,
+        key="live_undo",
+    ):
         if st.session_state.undo:
-            st.session_state.runs, st.session_state.wickets, st.session_state.balls, st.session_state.last = st.session_state.undo.pop()
+            (
+                st.session_state.runs,
+                st.session_state.wickets,
+                st.session_state.balls,
+                st.session_state.last,
+            ) = st.session_state.undo.pop()
+
             st.session_state.analysis = None
             st.rerun()
 
-
 # ============================================================
-# SESSION RESULT CARD
-# ============================================================
-
-if session_analysis:
-    yes = float(session_analysis["yes"])
-    no = float(session_analysis["no"])
-
-    if yes >= no:
-        result_label = "YES"
-        result_value = yes
-        result_css = "yes"
-    else:
-        result_label = "NO"
-        result_value = no
-        result_css = "no"
-
-    st.markdown(
-        f"""
-        <div class="session-box">
-            <div style="font-size:15px; color:#bed0e5; margin-bottom:6px;">Session Result</div>
-            <div class="{result_css}" style="width:100%; margin:0 auto;">
-                <div style="font-size:18px; font-weight:800; letter-spacing:0.5px;">{result_label}</div>
-                <div style="font-size:32px; font-weight:800; margin-top:6px;">{result_value:.1f}%</div>
-            </div>
-
-            <div style="margin-top:12px; font-size:14px; color:#bed0e5;">
-                <div><b>Session</b>: {int(st.session_state.low)} - {int(st.session_state.high)}</div>
-                <div><b>Avg Score</b>: {session_analysis['expected']:.1f}</div>
-                <div><b>Similar Matches</b>: {session_analysis['samples']}</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-else:
-    st.markdown(
-        """
-        <div class="session-box">
-            <div style="font-size:15px; color:#bed0e5; margin-bottom:6px;">Session Result</div>
-            <div style="font-size:28px; font-weight:700;">Calculating...</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# ============================================================
-# TEAM WINNING CARD
+# SESSION + TEAM WINNING
 # ============================================================
 
-winning_data = None
+session_column, winning_column = st.columns(2, gap="small")
 
-if target > 0:
-    winning_data = calculate_result(
-        connection,
-        league,
-        innings_no,
-        balls,
-        runs,
-        wickets,
-        session_over,
-        int(target),
-    )
-
-if winning_data is None:
+with session_column:
     if session_analysis:
-        winning_data = session_analysis
+        session_yes = float(session_analysis["yes"])
+        session_no = float(session_analysis["no"])
 
-if winning_data:
-    win_yes = float(winning_data["yes"])
-    win_no = float(winning_data["no"])
+        if session_yes >= session_no:
+            session_label = "YES"
+            session_percent = session_yes
+            session_class = "yes"
+        else:
+            session_label = "NO"
+            session_percent = session_no
+            session_class = "no"
 
-    if win_yes >= win_no:
-        winning_label = batting
-        winning_pct = win_yes
-        winning_css = "yes"
-    else:
-        winning_label = bowling
-        winning_pct = win_no
-        winning_css = "no"
+        st.markdown(
+            f"""
+            <div class="session-box">
+                <h3>Session Result</h3>
 
-    st.markdown(
-        f"""
-        <div class="winning-box">
-            <div style="font-size:15px; color:#bed0e5; margin-bottom:6px;">Team Winning</div>
-            <div class="{winning_css}" style="width:100%; margin:0 auto;">
-                <div style="font-size:18px; font-weight:800; letter-spacing:0.5px;">{winning_label}</div>
-                <div style="font-size:32px; font-weight:800; margin-top:6px;">{winning_pct:.1f}%</div>
+                <div class="{session_class}">
+                    <h2 style="margin:0;">{session_label} — {session_percent:.1f}%</h2>
+                </div>
+
+                <p class="small">
+                    Session:
+                    <b>{int(st.session_state.low)} - {int(st.session_state.high)}</b>
+                </p>
+
+                <p class="small">
+                    Avg Score:
+                    <b>{session_analysis["expected"]:.1f}</b>
+                </p>
+
+                <p class="small">
+                    Similar Matches:
+                    <b>{session_analysis["samples"]}</b>
+                </p>
             </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-else:
-    st.markdown(
-        """
-        <div class="winning-box">
-            <div style="font-size:15px; color:#bed0e5; margin-bottom:6px;">Team Winning</div>
-            <div style="font-size:28px; font-weight:700;">Calculating...</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            """
+            <div class="session-box">
+                <h3>Session Result</h3>
+                <h2>Calculating...</h2>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
+with winning_column:
+    if innings_no == 1 and target <= 0:
+        st.markdown(
+            """
+            <div class="winning-box">
+                <h3>Team Winning</h3>
+                <p class="small">1st innings me target available nahi hai.</p>
+                <p class="small">2nd innings start hone par target set karein.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        winning_target = int(target)
+
+        if innings_no == 2 and winning_target <= 0:
+            st.markdown(
+                """
+                <div class="winning-box">
+                    <h3>Team Winning</h3>
+                    <p class="small">Winning result ke liye target runs set karein.</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            winning_analysis = calculate_result(
+                connection,
+                league,
+                innings_no,
+                balls,
+                runs,
+                wickets,
+                session_over,
+                winning_target,
+            )
+
+            if winning_analysis:
+                batting_probability = float(winning_analysis["yes"])
+                bowling_probability = float(winning_analysis["no"])
+
+                if batting_probability >= bowling_probability:
+                    winning_team = batting
+                    winning_percent = batting_probability
+                    winning_class = "yes"
+                else:
+                    winning_team = bowling
+                    winning_percent = bowling_probability
+                    winning_class = "no"
+
+                st.markdown(
+                    f"""
+                    <div class="winning-box">
+                        <h3>Team Winning</h3>
+
+                        <div class="{winning_class}">
+                            <h2 style="margin:0;">{winning_team}</h2>
+                            <h2 style="margin:8px 0 0 0;">{winning_percent:.1f}%</h2>
+                        </div>
+
+                        <p class="small">
+                            Target: <b>{winning_target}</b>
+                        </p>
+
+                        <p class="small">
+                            Similar Matches: <b>{winning_analysis["samples"]}</b>
+                        </p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    """
+                    <div class="winning-box">
+                        <h3>Team Winning</h3>
+                        <h2>Calculating...</h2>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
 # ============================================================
 # MATCH DETAIL
@@ -1150,51 +1158,47 @@ detail[1].metric("Bowling", bowling)
 detail[2].metric("Ground", venue)
 detail[3].metric("Innings", innings_label)
 
-
 # ============================================================
-# MANUAL SESSION
+# MANUAL SESSION SETTINGS
 # ============================================================
 
-st.subheader("Session Settings")
+if st.session_state.manual:
+    st.subheader("Manual Session Settings")
 
-manual = st.columns(2)
+    manual_low_col, manual_high_col = st.columns(2)
 
-with manual[0]:
-    manual_low = st.number_input(
-        "Session Low",
-        0,
-        400,
-        int(st.session_state.low),
-        1,
-        key="manual_low",
-    )
+    with manual_low_col:
+        manual_low = st.number_input(
+            "Session Low",
+            0,
+            400,
+            int(st.session_state.low),
+            1,
+            key="manual_low_value",
+        )
 
-with manual[1]:
-    manual_high = st.number_input(
-        "Session High",
-        0,
-        400,
-        int(st.session_state.high),
-        1,
-        key="manual_high",
-    )
+    with manual_high_col:
+        manual_high = st.number_input(
+            "Session High",
+            0,
+            400,
+            int(st.session_state.high),
+            1,
+            key="manual_high_value",
+        )
 
-a, b = st.columns(2)
-
-with a:
-    if st.button("Apply Manual Session", use_container_width=True, key="apply_manual"):
-        st.session_state.manual = True
+    if st.button(
+        "Apply Manual Session",
+        use_container_width=True,
+        key="apply_manual_session",
+    ):
         st.session_state.low = int(manual_low)
-        st.session_state.high = max(int(manual_low) + 1, int(manual_high))
+        st.session_state.high = max(
+            int(manual_low) + 1,
+            int(manual_high),
+        )
         st.session_state.analysis = None
         st.rerun()
-
-with b:
-    if st.button("Use Auto Session", use_container_width=True, key="auto_session"):
-        st.session_state.manual = False
-        st.session_state.analysis = None
-        st.rerun()
-
 
 # ============================================================
 # FINAL RESULT SUMMARY
