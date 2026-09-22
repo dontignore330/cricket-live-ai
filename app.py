@@ -1043,8 +1043,7 @@ def calculate_auto_model(
         win_probability = (
             sum(
                 result * weight
-                for result, weight
-                in zip(win_results, weights)
+                for result, weight in zip(win_results, weights)
             )
             / total_weight
             * 100
@@ -1412,6 +1411,59 @@ with mode_column:
 
     st.session_state.manual_mode = (
         selected_mode == "MANUAL"
+    )
+
+
+# ============================================================
+# MATCH DETAILS ARROW
+# ============================================================
+
+with st.expander("⌄ Match Details"):
+    st.write(
+        f"**League:** {league}"
+    )
+
+    st.write(
+        f"**Batting Team:** {batting_team}"
+    )
+
+    st.write(
+        f"**Bowling Team:** {bowling_team}"
+    )
+
+    st.write(
+        f"**Innings:** {innings_label}"
+    )
+
+    st.write(
+        f"**Current Score:** "
+        f"{batting_team} {runs}/{wickets}"
+    )
+
+    st.write(
+        f"**Current Over:** "
+        f"{display_over(balls)} overs"
+    )
+
+    st.write(
+        f"**Session End:** "
+        f"{int(session_over)} overs"
+    )
+
+    st.write(
+        f"**Target Runs:** "
+        f"{int(target) if int(target) > 0 else 'Not set'}"
+    )
+
+    st.write(
+        f"**Session Line:** "
+        f"{int(st.session_state.session_low)} - "
+        f"{int(st.session_state.session_high)}"
+    )
+
+    st.write(
+        f"**Expected Session Score:** "
+        f"{float(st.session_state.expected_score):.1f}"
     )
 
 
