@@ -98,6 +98,43 @@ st.markdown(
         color: #ffffff !important;
     }
 
+    .result-box {
+        border-radius: 16px;
+        padding: 16px;
+        text-align: center;
+        color: white;
+    }
+
+    .session-box {
+        background: #0f223c;
+        border: 1px solid #2d4d72;
+        border-radius: 14px;
+        padding: 16px;
+        min-height: 220px;
+    }
+
+    .winning-box {
+        background: #0f223c;
+        border: 1px solid #2d4d72;
+        border-radius: 14px;
+        padding: 16px;
+        min-height: 220px;
+    }
+
+    .yes {
+        background: #0d5b34;
+        border: 2px solid #20c77a;
+        border-radius: 12px;
+        padding: 12px;
+    }
+
+    .no {
+        background: #5d1d1d;
+        border: 2px solid #ef5350;
+        border-radius: 12px;
+        padding: 12px;
+    }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -127,7 +164,6 @@ if not st.session_state.authenticated:
         if hmac.compare_digest(password, PASSWORD):
 
             st.session_state.authenticated = True
-
             st.rerun()
 
         else:
@@ -1101,9 +1137,14 @@ def calculate_winning_result(
     current_ball,
     current_runs,
     current_wickets,
-    batting,
-    bowling,
+    session_over,
+    target,
 ):
+
+    if innings_no == 1 or int(target) <= 0:
+        return None
+
+    end_ball = int(session_over) * 6
 
     matches = similar_matches(
         connection,
@@ -1112,7 +1153,7 @@ def calculate_winning_result(
         current_ball,
         current_runs,
         current_wickets,
-        120,
+        end_ball,
     )
 
     if not matches:
@@ -1121,12 +1162,9 @@ def calculate_winning_result(
     batting_weight = 0.0
     bowling_weight = 0.0
 
-    batting_count = 0
-    bowling_count = 0
-
     for match_id, _, weight in matches:
 
-        row = connection.execute(
+        result = connection.execute(
             """
             SELECT winner
             FROM matches
@@ -1136,60 +1174,53 @@ def calculate_winning_result(
             (match_id,),
         ).fetchone()
 
-        if not row:
+        if not result:
             continue
 
-        winner = str(
-            row["winner"] or ""
-        ).strip()
+        winner = str(result["winner"] or "").strip()
 
-        if winner == batting:
+        final_score, _ = score_at(
+            connection,
+            match_id,
+            innings_no,
+            end_ball,
+        )
 
-            batting_weight += weight
-            batting_count += 1
+        if final_score >= int(target):
+            if winner:
+                if winner == "Chennai Super Kings":
+                    batting_weight += weight
+                else:
+                    bowling_weight += weight
+        else:
+            if winner:
+                if winner == "Chennai Super Kings":
+                    batting_weight += weight
+                else:
+                    bowling_weight += weight
 
-        elif winner == bowling:
+    total_weight = batting_weight + bowling_weight
 
-            bowling_weight += weight
-            bowling_count += 1
-
-    total_weight = (
-        batting_weight
-        +
-        bowling_weight
-    )
-
-    total_count = (
-        batting_count
-        +
-        bowling_count
-    )
-
-    if total_weight <= 0 or total_count <= 0:
+    if total_weight <= 0:
         return None
 
-    batting_percent = (
+    batting_probability = (
         batting_weight
-        /
-        total_weight
-        *
-        100
+        / total_weight
+        * 100
     )
 
-    bowling_percent = (
+    bowling_probability = (
         bowling_weight
-        /
-        total_weight
-        *
-        100
+        / total_weight
+        * 100
     )
 
     return {
-        "batting": batting_percent,
-        "bowling": bowling_percent,
-        "batting_count": batting_count,
-        "bowling_count": bowling_count,
-        "samples": total_count,
+        "batting": batting_probability,
+        "bowling": bowling_probability,
+        "samples": len(matches),
+        "target": int(target),
     }
 
 
@@ -1358,12 +1389,8 @@ with st.sidebar:
     points = ["0.0"]
 
     for over in range(20):
-
         for ball in range(1, 7):
-
-            points.append(
-                f"{over}.{ball}"
-            )
+            points.append(f"{over}.{ball}")
 
     start_over = st.selectbox(
         "Start Over / Ball",
@@ -1421,10 +1448,7 @@ with st.sidebar:
             )
 
             st.session_state.undo = []
-
-            st.session_state.last = (
-                "Starting situation set"
-            )
+            st.session_state.last = "Starting situation set"
 
             st.rerun()
 
@@ -1517,7 +1541,6 @@ session_analysis = calculate_result(
     int(st.session_state.high),
 )
 
-
 # ============================================================
 # TEAM WINNING ANALYSIS
 # ============================================================
@@ -1529,8 +1552,8 @@ winning_analysis = calculate_winning_result(
     balls,
     runs,
     wickets,
-    batting,
-    bowling,
+    session_over,
+    target,
 )
 
 
@@ -1562,8 +1585,7 @@ with live_col2:
     )
 
     st.caption(
-        f"Last action: "
-        f"{st.session_state.last}"
+        f"Last action: {st.session_state.last}"
     )
 
 
@@ -1582,6 +1604,7 @@ buttons = [
     ("6", 6, 0, True),
     ("Wkt", 0, 1, True),
     ("Wide", 1, 0, False),
+    ("No Ball", 1, 0, False),
 ]
 
 cols = st.columns(
@@ -1613,23 +1636,13 @@ for index, (
                 )
             )
 
-            st.session_state.runs = (
-                runs + run_value
-            )
-
-            st.session_state.wickets = min(
-                10,
-                wickets + wicket_value,
-            )
+            st.session_state.runs = runs + run_value
+            st.session_state.wickets = min(10, wickets + wicket_value)
 
             if legal_ball:
-
-                st.session_state.balls = (
-                    balls + 1
-                )
+                st.session_state.balls = balls + 1
 
             st.session_state.last = label
-
             st.rerun()
 
 
@@ -1678,7 +1691,6 @@ session_column, winning_column = st.columns(
     gap="small",
 )
 
-
 # ============================================================
 # SESSION RESULT
 # ============================================================
@@ -1689,42 +1701,47 @@ with session_column:
 
     if session_analysis:
 
-        yes = float(
-            session_analysis["yes"]
-        )
-
-        no = float(
-            session_analysis["no"]
-        )
+        yes = float(session_analysis["yes"])
+        no = float(session_analysis["no"])
 
         if yes >= no:
-
             result_label = "YES"
             result_percent = yes
-
-            st.success(
-                f"## YES — {result_percent:.1f}%"
-            )
-
+            result_class = "yes"
         else:
-
             result_label = "NO"
             result_percent = no
+            result_class = "no"
 
-            st.error(
-                f"## NO — {result_percent:.1f}%"
-            )
+        st.markdown(
+            f"""
+            <div class="session-box">
+                <div class="{result_class}" style="border-radius:12px; padding:12px; margin-bottom:12px;">
+                    <h2 style="margin:0;">{result_label} — {result_percent:.1f}%</h2>
+                </div>
 
-        st.metric(
-            "Avg Score",
-            f"{session_analysis['expected']:.1f}",
+                <p class="small">
+                    Session:
+                    <b>{int(st.session_state.low)} - {int(st.session_state.high)}</b>
+                </p>
+
+                <p class="small">
+                    Avg Score:
+                    <b>{session_analysis["expected"]:.1f}</b>
+                </p>
+
+                <p class="small">
+                    Similar Matches:
+                    <b>{session_analysis["samples"]}</b>
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
     else:
-
         st.info(
-            "Not enough similar historical "
-            "situations available."
+            "Not enough similar historical situations available."
         )
 
 
@@ -1736,54 +1753,56 @@ with winning_column:
 
     st.subheader("Team Winning")
 
-    if winning_analysis:
-
-        batting_probability = float(
-            winning_analysis["batting"]
+    if innings_no == 1 or int(target) <= 0:
+        st.info(
+            "1st innings me target available nahi hota. "
+            "Team winning result ke liye 2nd innings me target set karein."
         )
 
-        bowling_probability = float(
-            winning_analysis["bowling"]
-        )
+    elif winning_analysis:
 
-        if (
-            batting_probability
-            >=
-            bowling_probability
-        ):
+        batting_probability = float(winning_analysis["batting"])
+        bowling_probability = float(winning_analysis["bowling"])
 
+        if batting_probability >= bowling_probability:
             winning_team = batting
-            winning_percent = (
-                batting_probability
-            )
-
+            winning_percent = batting_probability
+            winning_class = "yes"
         else:
-
             winning_team = bowling
-            winning_percent = (
-                bowling_probability
-            )
+            winning_percent = bowling_probability
+            winning_class = "no"
 
-        st.success(
-            f"## {winning_team}"
-        )
+        st.markdown(
+            f"""
+            <div class="winning-box">
+                <div class="{winning_class}" style="border-radius:12px; padding:12px; margin-bottom:12px;">
+                    <h2 style="margin:0;">{winning_team}</h2>
+                    <h2 style="margin:8px 0 0 0;">{winning_percent:.1f}%</h2>
+                </div>
 
-        st.metric(
-            "Historical Win Estimate",
-            f"{winning_percent:.1f}%",
-        )
+                <p class="small">
+                    Target: <b>{int(target)}</b>
+                </p>
 
-        st.caption(
-            f"{batting}: {batting_probability:.1f}%"
-            f"  •  "
-            f"{bowling}: {bowling_probability:.1f}%"
+                <p class="small">
+                    {batting}: <b>{batting_probability:.1f}%</b>
+                    •
+                    {bowling}: <b>{bowling_probability:.1f}%</b>
+                </p>
+
+                <p class="small">
+                    Similar Matches:
+                    <b>{winning_analysis["samples"]}</b>
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
     else:
-
         st.info(
-            "Not enough historical winner "
-            "data for this situation."
+            "Is situation ke liye historical winning data available nahi hai."
         )
 
 
@@ -1808,9 +1827,7 @@ if st.session_state.manual:
                 "Session Low",
                 min_value=0,
                 max_value=400,
-                value=int(
-                    st.session_state.low
-                ),
+                value=int(st.session_state.low),
                 step=1,
                 key="manual_low",
             )
@@ -1821,9 +1838,7 @@ if st.session_state.manual:
                 "Session High",
                 min_value=0,
                 max_value=400,
-                value=int(
-                    st.session_state.high
-                ),
+                value=int(st.session_state.high),
                 step=1,
                 key="manual_high",
             )
@@ -1834,14 +1849,8 @@ if st.session_state.manual:
             key="apply_manual",
         ):
 
-            st.session_state.low = int(
-                low_value
-            )
-
-            st.session_state.high = max(
-                int(low_value) + 1,
-                int(high_value),
-            )
+            st.session_state.low = int(low_value)
+            st.session_state.high = max(int(low_value) + 1, int(high_value))
 
             st.rerun()
 
@@ -1891,7 +1900,6 @@ with st.expander("Details"):
         )
 
     if winning_analysis:
-
         st.write(
             f"**{batting} historical WIN:** "
             f"{winning_analysis['batting']:.1f}%"
@@ -1912,7 +1920,6 @@ with st.expander("Details"):
     )
 
     if innings_no == 2 and target > 0:
-
         st.write(
             f"**Target:** {target}"
         )
