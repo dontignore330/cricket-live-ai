@@ -25,7 +25,7 @@ st.set_page_config(
 # CSS
 # ============================================================
 
-st.markdown(
+st.html(
     """
     <style>
     .stApp {
@@ -128,8 +128,7 @@ st.markdown(
         color: #ffffff !important;
     }
     </style>
-    """,
-    unsafe_allow_html=True,
+    """
 )
 
 
@@ -1363,7 +1362,7 @@ score_column, mode_column = st.columns(
 )
 
 with score_column:
-    st.markdown(
+    st.html(
         f"""
         <div class="card">
             <h2 style="margin:0">
@@ -1377,8 +1376,7 @@ with score_column:
                 • Last: {st.session_state.last or "—"}
             </p>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 with mode_column:
@@ -1397,7 +1395,6 @@ with mode_column:
         key="session_mode_radio",
     )
 
-    # This modifies a different state key, not the radio widget key.
     st.session_state.manual_mode = (
         selected_mode == "MANUAL"
     )
@@ -1497,7 +1494,7 @@ session_column, winning_column = st.columns(
 )
 
 with session_column:
-    st.markdown(
+    st.html(
         f"""
         <div class="session-box">
             <h3 style="margin:0">Session</h3>
@@ -1514,8 +1511,7 @@ with session_column:
                 • End: {session_over} ov
             </p>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 with winning_column:
@@ -1527,7 +1523,7 @@ with winning_column:
         else "—"
     )
 
-    st.markdown(
+    st.html(
         f"""
         <div class="winning-box">
             <h3 style="margin:0">
@@ -1542,8 +1538,7 @@ with winning_column:
                 Historical situations + current score
             </p>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -1678,7 +1673,7 @@ result_percent = max(
 
 st.subheader("VasuDev Result")
 
-st.markdown(
+st.html(
     f"""
     <div class="{result_class}">
         <h1 style="margin:0">
@@ -1705,8 +1700,7 @@ st.markdown(
             <b>{session_samples}</b>
         </p>
     </div>
-    """,
-    unsafe_allow_html=True,
+    """
 )
 
 
@@ -1734,7 +1728,7 @@ if final_win_probability is not None:
         winner_percent = bowling_win
         winner_class = "no"
 
-    st.markdown(
+    st.html(
         f"""
         <div class="{winner_class}">
             <h1 style="margin:0">
@@ -1756,8 +1750,7 @@ if final_win_probability is not None:
                   else f"Target: {target}")}
             </p>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 else:
@@ -1771,35 +1764,6 @@ else:
             "Winning estimate ke liye sufficient "
             "historical result data nahi mila."
         )
-
-
-# ============================================================
-# MATCH DETAILS
-# ============================================================
-
-st.subheader("Match Detail")
-
-detail_columns = st.columns(4)
-
-detail_columns[0].metric(
-    "Batting",
-    batting_team,
-)
-
-detail_columns[1].metric(
-    "Bowling",
-    bowling_team,
-)
-
-detail_columns[2].metric(
-    "Innings",
-    innings_label,
-)
-
-detail_columns[3].metric(
-    "Overs",
-    f"{display_over(balls)} / {session_over}",
-)
 
 
 # ============================================================
