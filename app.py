@@ -34,15 +34,6 @@ st.html(
         color: #f8fafc;
     }
 
-    header[data-testid="stHeader"] {
-        background: transparent !important;
-        height: 0 !important;
-        min-height: 0 !important;
-        box-shadow: none !important;
-        border: none !important;
-        z-index: 999999;
-    }
-
     header[data-testid="stHeader"] button,
     [data-testid="collapsedControl"] {
         background: #12365f !important;
@@ -52,11 +43,6 @@ st.html(
         left: 10px !important;
         position: relative !important;
         box-shadow: 0 2px 6px rgba(0,0,0,0.4) !important;
-    }
-
-    header[data-testid="stHeader"] svg {
-        color: #ffffff !important;
-        fill: #ffffff !important;
     }
 
     .block-container {
@@ -123,10 +109,6 @@ st.html(
         background: #12365f;
         color: #ffffff;
         border: 1px solid #3c6795;
-    }
-
-    [data-testid="stHorizontalBlock"] {
-        gap: 0.25rem !important;
     }
 
     [data-testid="stMetric"] {
@@ -196,7 +178,7 @@ LEAGUE_PAGE_NAMES = {
     "Women's Big Bash League": "Women's Big Bash League",
 }
 
-DOWNLOAD_URLS = {
+KNOWN_URLS = {
     "IPL": "https://cricsheet.org/downloads/ipl_json.zip",
     "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
 }
@@ -622,7 +604,7 @@ def discover_league_zip_url(league):
     page_name = LEAGUE_PAGE_NAMES.get(league)
 
     if not page_name:
-        return DOWNLOAD_URLS.get(league)
+        return KNOWN_URLS.get(league)
 
     try:
         html = fetch_page(DOWNLOADS_PAGE)
@@ -631,51 +613,64 @@ def discover_league_zip_url(league):
             f"Cricsheet downloads page load nahi hua: {error}"
         )
 
-    rows = re.split(
-        r"<tr[\s>]",
-        html,
-        flags=re.IGNORECASE,
-    )
-
-    for row in rows:
-        if page_name.lower() not in row.lower():
-            continue
-
-        zip_links = re.findall(
-            r"href=[\"']([^\"']+\.zip)[\"']",
-            row,
+    json_links = list(
+        re.finditer(
+            r"<a[^>]+href=[\"']([^\"']+\.zip)[\"'][^>]*>"
+            r"\s*JSON\s*</a>",
+            html,
             flags=re.IGNORECASE,
         )
+    )
 
-        json_zip_links = [
-            link
-            for link in zip_links
-            if "json" in link.lower()
-        ]
-
-        selected_link = (
-            json_zip_links[0]
-            if json_zip_links
-            else (
-                zip_links[0]
-                if zip_links
-                else None
-            )
+    if not json_links:
+        raise RuntimeError(
+            "Cricsheet page par koi JSON zip link nahi mila."
         )
 
-        if selected_link:
-            if selected_link.startswith("/"):
-                selected_link = (
-                    "https://cricsheet.org"
-                    + selected_link
-                )
+    best_match = None
+    best_distance = None
 
-            return selected_link
+    for match in json_links:
+        start = max(0, match.start() - 3000)
+        end = min(len(html), match.end() + 3000)
 
-    raise RuntimeError(
-        f"Cricsheet page par '{page_name}' "
-        f"ka JSON zip link nahi mila."
-    )
+        context = html[start:end]
+
+        if page_name.lower() not in context.lower():
+            continue
+
+        name_position = context.lower().find(
+            page_name.lower()
+        )
+
+        link_position = match.start() - start
+
+        distance = abs(
+            name_position - link_position
+        )
+
+        if (
+            best_distance is None
+            or distance < best_distance
+        ):
+            best_distance = distance
+            best_match = match
+
+    if best_match is None:
+        raise RuntimeError(
+            f"Cricsheet page par '{page_name}' "
+            f"ka JSON zip link nahi mila."
+        )
+
+    found_url = best_match.group(1)
+
+    if found_url.startswith("/"):
+        found_url = (
+            "https://cricsheet.org"
+            + found_url
+        )
+
+    return found_url
 
 
 def download_archive(league, archive_path):
@@ -1075,7 +1070,7 @@ def calculate_auto_model(
     batting_team,
     bowling_team,
     venue,
-    target,
+    match_target,
 ):
     end_ball = int(session_over) * 6
 
@@ -1151,7 +1146,7 @@ def calculate_auto_model(
                 else 0
             )
 
-        elif int(innings_no) == 2 and int(target) > 0:
+        elif int(innings_no) == 2 and int(match_target) > 0:
             historical_final = final_score(
                 connection,
                 state["match_id"],
@@ -1160,7 +1155,7 @@ def calculate_auto_model(
 
             win_results.append(
                 1
-                if historical_final >= int(target)
+                if historical_final >= int(match_target)
                 else 0
             )
 
@@ -1308,13 +1303,13 @@ def calculate_manual_probability(
 # ============================================================
 
 DEFAULTS = {
-    "runs": 16,
-    "wickets": 1,
-    "balls": 19,
+    "runs": 8,
+    "wickets": 0,
+    "balls": 6,
     "last": "Starting situation",
     "undo_stack": [],
     "session_over": 6,
-    "target": 0,
+    "match_target": 0,
     "manual_mode": False,
     "session_low": 0,
     "session_high": 1,
@@ -1338,6 +1333,35 @@ with st.sidebar:
         LEAGUES,
         key="league_select",
     )
+
+    # Phone-friendly WBBL database reset button.
+    # It appears BEFORE database loading, so it is visible even if WBBL fails.
+
+    if league == "Women's Big Bash League":
+        if st.button(
+            "Delete & Rebuild WBBL Database",
+            use_container_width=True,
+            key="rebuild_wbbl_button",
+        ):
+            wbbl_path = DATABASES[league]
+
+            for suffix in ["", ".building", ".tmp"]:
+                file_path = Path(
+                    str(wbbl_path) + suffix
+                )
+
+                if file_path.exists():
+                    try:
+                        file_path.unlink()
+                    except Exception:
+                        pass
+
+            st.cache_resource.clear()
+            st.success(
+                "WBBL database delete ho gayi. "
+                "Ab fresh WBBL data download hoga."
+            )
+            st.rerun()
 
     try:
         database_path = ensure_database(league)
@@ -1429,17 +1453,30 @@ with st.sidebar:
         key="session_over_widget",
     )
 
-    target = st.number_input(
-        "Target Runs",
-        min_value=0,
+    starting_session_line = st.number_input(
+        "Starting Session Line",
+        min_value=1,
         max_value=400,
-        value=int(st.session_state.target),
+        value=62,
         step=1,
-        key="target_runs_widget",
+        help="Example: 62 means Session 61-62",
+        key="starting_session_line_widget",
     )
 
+    match_target = 0
+
+    if innings_no == 2:
+        match_target = st.number_input(
+            "Match Target Runs",
+            min_value=0,
+            max_value=400,
+            value=int(st.session_state.match_target),
+            step=1,
+            key="match_target_widget",
+        )
+
     st.session_state.session_over = int(session_over)
-    st.session_state.target = int(target)
+    st.session_state.match_target = int(match_target)
 
     over_points = ["0.0"]
 
@@ -1450,7 +1487,7 @@ with st.sidebar:
     start_over = st.selectbox(
         "Start Over / Ball",
         over_points,
-        index=19,
+        index=6,
         key="start_over_select",
     )
 
@@ -1458,7 +1495,7 @@ with st.sidebar:
         "Start Runs",
         min_value=0,
         max_value=400,
-        value=16,
+        value=8,
         step=1,
         key="start_runs_widget",
     )
@@ -1467,7 +1504,7 @@ with st.sidebar:
         "Start Wickets",
         min_value=0,
         max_value=10,
-        value=1,
+        value=0,
         step=1,
         key="start_wickets_widget",
     )
@@ -1526,6 +1563,14 @@ with st.sidebar:
     )
 
     st.metric(
+        "Session",
+        (
+            f"{st.session_state.session_low}-"
+            f"{st.session_state.session_high}"
+        ),
+    )
+
+    st.metric(
         "Session End",
         f"{st.session_state.session_over} ov",
     )
@@ -1556,7 +1601,7 @@ try:
         batting_team=batting_team,
         bowling_team=bowling_team,
         venue=selected_venue,
-        target=int(target),
+        match_target=int(match_target),
     )
 
 except Exception as error:
@@ -1565,7 +1610,7 @@ except Exception as error:
     st.stop()
 
 
-# Historical average is always independent of manual line.
+# Historical average always updates independently.
 st.session_state.expected_score = float(
     auto_model["expected"]
 )
@@ -1574,6 +1619,7 @@ st.session_state.win_probability = (
     auto_model["win_probability"]
 )
 
+# AUTO session line updates after every ball.
 if not st.session_state.manual_mode:
     st.session_state.session_low = int(
         auto_model["low"]
@@ -1605,7 +1651,6 @@ with score_column:
                 {display_over(balls)} ov
                 • Session End: {session_over} ov
                 • Ground: {selected_venue}
-                • Target: {target if target > 0 else "Not set"}
                 • Last: {st.session_state.last or "—"}
             </p>
         </div>
@@ -1979,23 +2024,15 @@ if final_win_probability is not None:
                 {bowling_team}:
                 <b>{bowling_win:.1f}%</b>
             </p>
-
-            <p style="margin:5px 0 0">
-                {(
-                    "Historical winner estimate"
-                    if innings_no == 1
-                    else f"Target: {target}"
-                )}
-            </p>
         </div>
         """
     )
 
 else:
-    if innings_no == 2 and int(target) <= 0:
+    if innings_no == 2 and int(match_target) <= 0:
         st.info(
             "2nd innings winning probability ke liye "
-            "Target Runs set karein."
+            "Match Target Runs set karein."
         )
     else:
         st.info(
@@ -2021,30 +2058,4 @@ with st.expander("Match & Analysis Details", expanded=False):
     st.write(f"**Session End:** {session_over} overs")
     st.write(
         f"**Session Line:** "
-        f"{int(st.session_state.session_low)} - "
-        f"{int(st.session_state.session_high)}"
-    )
-    st.write(
-        f"**Expected Session Score:** "
-        f"{float(st.session_state.expected_score):.1f}"
-    )
-    st.write(f"**Session YES:** {session_yes:.1f}%")
-    st.write(f"**Session NO:** {session_no:.1f}%")
-    st.write(
-        f"**Similar Historical Matches:** "
-        f"{session_samples}"
-    )
-
-    if final_win_probability is not None:
-        st.write(
-            f"**{batting_team} Win Probability:** "
-            f"{float(final_win_probability):.1f}%"
-        )
-
-    if innings_no == 2 and int(target) > 0:
-        st.write(f"**Target:** {int(target)}")
-
-
-st.caption(
-    "Historical estimate only. This is not a guarantee of the live match result."
-)
+        f"{int(st.session_state.session_low)}
