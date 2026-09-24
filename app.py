@@ -56,7 +56,6 @@ DATABASES = {
     "Women's Big Bash League": BASE / "wbbl_history.db",
 }
 
-# Working WBBL URL from your old code
 DOWNLOAD_URLS = {
     "IPL": "https://cricsheet.org/downloads/ipl_json.zip",
     "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
@@ -572,20 +571,7 @@ with st.sidebar:
         st.session_state.last = ""
         st.rerun()
 
-    st.divider()
-    st.subheader("Live Match")
-
-    sidebar_rr = (st.session_state.runs / st.session_state.balls) * 6 if st.session_state.balls > 0 else 0.0
-
-    st.metric("Score", f"{st.session_state.runs}/{st.session_state.wickets}")
-    st.metric("Overs", display_over(st.session_state.balls))
-    st.metric("Run Rate", f"{sidebar_rr:.2f}")
-    st.metric(
-        "Session",
-        f"{st.session_state.session_low}-{st.session_state.session_high}",
-    )
-    st.metric("Session End", f"{st.session_state.session_over} ov")
-
+# --- CONNECTING STATE UNIFIED DIRECTLY HERE ---
 runs = int(st.session_state.runs)
 wickets = int(st.session_state.wickets)
 balls = int(st.session_state.balls)
@@ -608,14 +594,25 @@ except Exception as error:
     st.exception(error)
     st.stop()
 
-# Historical average always updates independently of manual session line.
 st.session_state.expected_score = float(auto_model["expected"])
 st.session_state.win_probability = auto_model["win_probability"]
 
-# AUTO session line updates after every ball.
 if not st.session_state.manual_mode:
     st.session_state.session_low = int(auto_model["low"])
     st.session_state.session_high = int(auto_model["high"])
+
+with st.sidebar:
+    st.divider()
+    st.subheader("Live Match")
+    sidebar_rr = (runs / balls) * 6 if balls > 0 else 0.0
+    st.metric("Score", f"{runs}/{wickets}")
+    st.metric("Overs", display_over(balls))
+    st.metric("Run Rate", f"{sidebar_rr:.2f}")
+    st.metric(
+        "Session",
+        f"{int(st.session_state.session_low)}-{int(st.session_state.session_high)}",
+    )
+    st.metric("Session End", f"{session_over} ov")
 
 score_column, mode_column = st.columns([8, 2])
 with score_column:
