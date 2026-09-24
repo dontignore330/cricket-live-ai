@@ -33,11 +33,6 @@ st.html(
         color: #f8fafc;
     }
 
-    /* ========================================================
-       HEADER FIX ONLY
-       Keep sidebar arrow visible, remove black strip effect
-       ======================================================== */
-
     header[data-testid="stHeader"] {
         background: transparent !important;
         height: 0 !important;
@@ -220,7 +215,6 @@ DATABASES = {
     "Women's Big Bash League": BASE / "wbbl_history.db",
 }
 
-# Fixed WBBL link to standard cricsheet path structure
 DOWNLOAD_URLS = {
     "IPL": "https://cricsheet.org/downloads/ipl_json.zip",
     "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
@@ -660,10 +654,13 @@ def ensure_database(league):
         with tempfile.TemporaryDirectory() as temp_directory:
             archive_path = Path(temp_directory) / "matches.zip"
 
-            urllib.request.urlretrieve(
+            # Added User-Agent header to prevent 403/404 blocks from cricsheet
+            req = urllib.request.Request(
                 DOWNLOAD_URLS[league],
-                archive_path,
+                headers={'User-Agent': 'Mozilla/5.0'}
             )
+            with urllib.request.urlopen(req) as response, open(archive_path, 'wb') as out_file:
+                out_file.write(response.read())
 
             build_database(
                 building_path,
@@ -856,7 +853,6 @@ def find_similar_states(
             params,
         ).fetchall()
 
-    # Priority cascade: Venue+Both -> Venue+Batting -> Both -> Batting -> All
     candidates = []
     if venue and venue != "All Grounds":
         candidates = fetch_candidates("both", use_venue=True)
@@ -1224,7 +1220,6 @@ with st.sidebar:
         st.exception(error)
         st.stop()
 
-    # Venue / Ground Selection
     venues = ["All Grounds"] + get_values(
         connection,
         """
