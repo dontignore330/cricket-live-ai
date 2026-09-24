@@ -2058,4 +2058,30 @@ with st.expander("Match & Analysis Details", expanded=False):
     st.write(f"**Session End:** {session_over} overs")
     st.write(
         f"**Session Line:** "
-        f"{int(st.session_state.session_low)}
+        f"{int(st.session_state.session_low)} - "
+        f"{int(st.session_state.session_high)}"
+    )
+    st.write(
+        f"**Expected Session Score:** "
+        f"{float(st.session_state.expected_score):.1f}"
+    )
+    st.write(f"**Session YES:** {session_yes:.1f}%")
+    st.write(f"**Session NO:** {session_no:.1f}%")
+    st.write(
+        f"**Similar Historical Matches:** "
+        f"{session_samples}"
+    )
+
+    if final_win_probability is not None:
+        st.write(
+            f"**{batting_team} Win Probability:** "
+            f"{float(final_win_probability):.1f}%"
+        )
+
+    if innings_no == 2 and int(match_target) > 0:
+        st.write(f"**Match Target:** {int(match_target)}")
+
+
+st.caption(
+    "Historical estimate only. This is not a guarantee of the live match result."
+)
