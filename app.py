@@ -44,6 +44,7 @@ st.html(
         min-height: 0 !important;
         box-shadow: none !important;
         border: none !important;
+        z-index: 999999;
     }
 
     header[data-testid="stHeader"] > div {
@@ -54,9 +55,15 @@ st.html(
         padding-top: 0 !important;
     }
 
-    [data-testid="stHeader"] button {
-        background: transparent !important;
+    [data-testid="stHeader"] button,
+    [data-testid="collapsedControl"] {
+        background: #12365f !important;
         color: #ffffff !important;
+        border-radius: 50% !important;
+        top: 10px !important;
+        left: 10px !important;
+        position: relative !important;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.4) !important;
     }
 
     [data-testid="stHeader"] svg {
@@ -66,7 +73,7 @@ st.html(
 
     .block-container {
         max-width: 1450px;
-        padding-top: 1rem !important;
+        padding-top: 2.5rem !important;
         padding-bottom: 2rem !important;
     }
 
@@ -213,6 +220,7 @@ DATABASES = {
     "Women's Big Bash League": BASE / "wbbl_history.db",
 }
 
+# Fixed WBBL link to standard cricsheet path structure
 DOWNLOAD_URLS = {
     "IPL": "https://cricsheet.org/downloads/ipl_json.zip",
     "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
@@ -769,7 +777,7 @@ def match_winner(connection, match_id):
 
 
 # ============================================================
-# HISTORICAL MATCH MATCHING
+# HISTORICAL MATCH MATCHING (WITH VENUE & TEAM FILTERS)
 # ============================================================
 
 def find_similar_states(
@@ -782,6 +790,7 @@ def find_similar_states(
     end_ball,
     batting_team,
     bowling_team,
+    venue,
 ):
     low_ball = max(1, int(current_ball) - 2)
     high_ball = min(
@@ -789,11 +798,11 @@ def find_similar_states(
         int(current_ball) + 2,
     )
 
-    def fetch_candidates(mode):
+    def fetch_candidates(mode, use_venue=False):
         where_sql = """
-            league=?
-            AND innings_no=?
-            AND ball_pos BETWEEN ? AND ?
+            d.league=?
+            AND d.innings_no=?
+            AND d.ball_pos BETWEEN ? AND ?
         """
 
         params = [
@@ -803,10 +812,14 @@ def find_similar_states(
             high_ball,
         ]
 
+        if use_venue and venue and venue != "All Grounds":
+            where_sql += " AND m.venue=?"
+            params.append(venue)
+
         if mode == "both":
             where_sql += """
-                AND batting_team=?
-                AND bowling_team=?
+                AND d.batting_team=?
+                AND d.bowling_team=?
             """
             params.extend(
                 [
@@ -816,25 +829,26 @@ def find_similar_states(
             )
 
         elif mode == "batting":
-            where_sql += " AND batting_team=?"
+            where_sql += " AND d.batting_team=?"
             params.append(batting_team)
 
         query = f"""
             SELECT
-                match_id,
-                innings_no,
-                ball_pos,
-                batting_team,
-                bowling_team
-            FROM deliveries
+                d.match_id,
+                d.innings_no,
+                d.ball_pos,
+                d.batting_team,
+                d.bowling_team
+            FROM deliveries d
+            JOIN matches m ON d.match_id = m.match_id
             WHERE {where_sql}
             GROUP BY
-                match_id,
-                innings_no,
-                ball_pos,
-                batting_team,
-                bowling_team
-            LIMIT 20000
+                d.match_id,
+                d.innings_no,
+                d.ball_pos,
+                d.batting_team,
+                d.bowling_team
+            LIMIT 25000
         """
 
         return connection.execute(
@@ -842,13 +856,21 @@ def find_similar_states(
             params,
         ).fetchall()
 
-    candidates = fetch_candidates("both")
+    # Priority cascade: Venue+Both -> Venue+Batting -> Both -> Batting -> All
+    candidates = []
+    if venue and venue != "All Grounds":
+        candidates = fetch_candidates("both", use_venue=True)
+        if len(candidates) < 30:
+            candidates = fetch_candidates("batting", use_venue=True)
 
-    if len(candidates) < 40:
-        candidates = fetch_candidates("batting")
+    if len(candidates) < 30:
+        candidates = fetch_candidates("both", use_venue=False)
 
-    if len(candidates) < 40:
-        candidates = fetch_candidates("all")
+    if len(candidates) < 30:
+        candidates = fetch_candidates("batting", use_venue=False)
+
+    if len(candidates) < 30:
+        candidates = fetch_candidates("all", use_venue=False)
 
     best_states = {}
 
@@ -931,6 +953,7 @@ def calculate_auto_model(
     session_over,
     batting_team,
     bowling_team,
+    venue,
     target,
 ):
     end_ball = int(session_over) * 6
@@ -956,6 +979,7 @@ def calculate_auto_model(
         end_ball,
         batting_team,
         bowling_team,
+        venue,
     )
 
     if not states:
@@ -1087,6 +1111,7 @@ def calculate_manual_probability(
     session_over,
     batting_team,
     bowling_team,
+    venue,
     line_high,
 ):
     end_ball = int(session_over) * 6
@@ -1101,6 +1126,7 @@ def calculate_manual_probability(
         end_ball,
         batting_team,
         bowling_team,
+        venue,
     )
 
     if not states:
@@ -1197,6 +1223,25 @@ with st.sidebar:
         st.error("Database start nahi ho saka.")
         st.exception(error)
         st.stop()
+
+    # Venue / Ground Selection
+    venues = ["All Grounds"] + get_values(
+        connection,
+        """
+        SELECT DISTINCT venue
+        FROM matches
+        WHERE league=?
+        AND venue<>''
+        ORDER BY venue
+        """,
+        league,
+    )
+
+    selected_venue = st.selectbox(
+        "Ground / Venue",
+        venues,
+        key="venue_select",
+    )
 
     teams = get_values(
         connection,
@@ -1356,6 +1401,7 @@ try:
         session_over=int(session_over),
         batting_team=batting_team,
         bowling_team=bowling_team,
+        venue=selected_venue,
         target=int(target),
     )
 
@@ -1403,6 +1449,7 @@ with score_column:
             <p class="small" style="margin:5px 0 0">
                 {display_over(balls)} ov
                 • Session End: {session_over} ov
+                • Ground: {selected_venue}
                 • Target: {target if target > 0 else "Not set"}
                 • Last: {st.session_state.last or "—"}
             </p>
@@ -1647,6 +1694,7 @@ if st.session_state.manual_mode:
             session_over=int(session_over),
             batting_team=batting_team,
             bowling_team=bowling_team,
+            venue=selected_venue,
             line_high=int(
                 st.session_state.session_high
             ),
@@ -1808,6 +1856,10 @@ with st.expander("Match & Analysis Details", expanded=False):
     )
 
     st.write(
+        f"**Ground / Venue:** {selected_venue}"
+    )
+
+    st.write(
         f"**Current Situation:** "
         f"{batting_team} {runs}/{wickets} "
         f"at {display_over(balls)} overs"
@@ -1862,11 +1914,6 @@ with st.expander("Match & Analysis Details", expanded=False):
         st.write(
             f"**Target:** {int(target)}"
         )
-
-    st.write(
-        f"**Ground:** Database venue selection is available "
-        f"in the current match setup."
-    )
 
 
 st.caption(
