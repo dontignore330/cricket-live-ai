@@ -224,7 +224,7 @@ DATABASES = {
 DOWNLOAD_URLS = {
     "IPL": "https://cricsheet.org/downloads/ipl_json.zip",
     "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
-    "Women's Big Bash League": "https://cricsheet.org/downloads/wbbl_json.zip",
+    "Women's Big Bash League": "https://cricsheet.org/downloads/wbb_json.zip",
 }
 
 LEAGUES = list(DATABASES.keys())
@@ -1449,6 +1449,65 @@ with st.sidebar:
         st.session_state.last = ""
         st.rerun()
 
+    # Session line is operated only from the sidebar.
+    st.markdown("---")
+    st.subheader("Session Run / Line")
+
+    sidebar_low, sidebar_high = st.columns(2, gap="small")
+
+    with sidebar_low:
+        sidebar_session_low = st.number_input(
+            "Session Low",
+            min_value=0,
+            max_value=400,
+            value=int(st.session_state.session_low),
+            step=1,
+            key="sidebar_session_low_widget",
+        )
+
+    with sidebar_high:
+        sidebar_session_high = st.number_input(
+            "Session High",
+            min_value=0,
+            max_value=400,
+            value=max(
+                int(st.session_state.session_low) + 1,
+                int(st.session_state.session_high),
+            ),
+            step=1,
+            key="sidebar_session_high_widget",
+        )
+
+    session_control_col, auto_session_col = st.columns(2, gap="small")
+
+    with session_control_col:
+        if st.button(
+            "Apply Session",
+            use_container_width=True,
+            key="sidebar_apply_session_button",
+        ):
+            st.session_state.manual_mode = True
+            st.session_state.session_low = int(sidebar_session_low)
+            st.session_state.session_high = max(
+                int(sidebar_session_low) + 1,
+                int(sidebar_session_high),
+            )
+            st.rerun()
+
+    with auto_session_col:
+        if st.button(
+            "Auto Session",
+            use_container_width=True,
+            key="sidebar_auto_session_button",
+        ):
+            st.session_state.manual_mode = False
+            st.rerun()
+
+    st.caption(
+        "Manual session line yahin se update karein. "
+        "Har ball/event ke baad prediction current live state se refresh hoti hai."
+    )
+
     # Sidebar and main-page live state always read the same canonical state.
     st.markdown("---")
     st.subheader("Current Live State")
@@ -1618,63 +1677,18 @@ for index, (label, add_runs, add_wicket, legal_ball) in enumerate(actions):
 
 
 # ============================================================
-# SESSION + WINNING + HISTORICAL SUMMARY
+# WINNING SUMMARY
 # ============================================================
 
-session_column, historical_column, winning_column = st.columns(
-    3,
-    gap="small",
-)
-
-with session_column:
-    st.html(
-        f"""
-        <div class="session-box">
-            <h3 style="margin:0">Session DNA</h3>
-            <h1 style="margin:8px 0">
-                {int(st.session_state.session_low)}
-                -
-                {int(st.session_state.session_high)}
-            </h1>
-            <p class="small">
-                Expected: {float(st.session_state.expected_score):.1f}
-                • End: {session_over} ov
-            </p>
-            <p class="small">
-                Current Line is separate from historical memory.
-            </p>
-        </div>
-        """
-    )
-
-with historical_column:
-    st.html(
-        f"""
-        <div class="historical-box">
-            <h3 style="margin:0">Historical Situation</h3>
-            <h1 style="margin:8px 0">
-                {float(st.session_state.historical_average):.1f}
-            </h1>
-            <p class="small">
-                Historical Avg Score
-            </p>
-            <p class="small">
-                Range: <b>
-                {int(st.session_state.historical_low)}
-                -
-                {int(st.session_state.historical_high)}
-                </b>
-            </p>
-            <p class="small">
-                Comparable samples: {int(st.session_state.historical_samples)}
-            </p>
-        </div>
-        """
-    )
+winning_column = st.columns(1)[0]
 
 with winning_column:
     probability = st.session_state.win_probability
-    probability_text = f"{float(probability):.1f}%" if probability is not None else "—"
+    probability_text = (
+        f"{float(probability):.1f}%"
+        if probability is not None
+        else "—"
+    )
 
     st.html(
         f"""
@@ -1696,50 +1710,7 @@ with winning_column:
 # ============================================================
 # MANUAL SESSION CONTROLS
 # ============================================================
-
-manual_low_column, manual_high_column = st.columns(2, gap="small")
-
-with manual_low_column:
-    manual_low = st.number_input(
-        "Manual Session Low",
-        min_value=0,
-        max_value=400,
-        value=int(st.session_state.session_low),
-        step=1,
-        key="manual_low_widget",
-    )
-
-with manual_high_column:
-    manual_high = st.number_input(
-        "Manual Session High",
-        min_value=0,
-        max_value=400,
-        value=int(st.session_state.session_high),
-        step=1,
-        key="manual_high_widget",
-    )
-
-manual_button, auto_button = st.columns(2, gap="small")
-
-with manual_button:
-    if st.button(
-        "Apply Manual Session",
-        use_container_width=True,
-        key="apply_manual_session_button",
-    ):
-        st.session_state.manual_mode = True
-        st.session_state.session_low = int(manual_low)
-        st.session_state.session_high = max(int(manual_low) + 1, int(manual_high))
-        st.rerun()
-
-with auto_button:
-    if st.button(
-        "Use Auto Session",
-        use_container_width=True,
-        key="use_auto_session_button",
-    ):
-        st.session_state.manual_mode = False
-        st.rerun()
+# Session line controls are intentionally kept in the sidebar only.
 
 
 # ============================================================
@@ -1792,26 +1763,20 @@ st.html(
             SESSION {result_label}
             — {result_percent:.1f}%
         </h1>
-        <p style="margin:8px 0 0">
-            Session Line:
-            <b>
-                {int(st.session_state.session_low)}
-                -
-                {int(st.session_state.session_high)}
-            </b>
-        </p>
-        <p style="margin:5px 0 0">
-            Historical Avg:
-            <b>{float(st.session_state.historical_average):.1f}</b>
-            • Historical Range:
-            <b>
-                {int(st.session_state.historical_low)}-
-                {int(st.session_state.historical_high)}
-            </b>
-        </p>
-        <p style="margin:5px 0 0">
-            Similar Matches: <b>{session_samples}</b>
-        </p>
+        <div style="margin-top:12px; padding-top:12px; border-top:1px solid #4777a8;">
+            <p style="margin:0 0 6px">
+                Historical Average:
+                <b>{float(st.session_state.historical_average):.1f}</b>
+            </p>
+            <p style="margin:5px 0">
+                Historical Range:
+                <b>{int(st.session_state.historical_low)} - {int(st.session_state.historical_high)}</b>
+            </p>
+            <p style="margin:5px 0 0">
+                Similar Historical Samples:
+                <b>{int(st.session_state.historical_samples)}</b>
+            </p>
+        </div>
     </div>
     """
 )
