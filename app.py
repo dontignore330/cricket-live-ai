@@ -1334,35 +1334,6 @@ with st.sidebar:
         key="league_select",
     )
 
-    # Phone-friendly WBBL database reset button.
-    # It appears BEFORE database loading, so it is visible even if WBBL fails.
-
-    if league == "Women's Big Bash League":
-        if st.button(
-            "Delete & Rebuild WBBL Database",
-            use_container_width=True,
-            key="rebuild_wbbl_button",
-        ):
-            wbbl_path = DATABASES[league]
-
-            for suffix in ["", ".building", ".tmp"]:
-                file_path = Path(
-                    str(wbbl_path) + suffix
-                )
-
-                if file_path.exists():
-                    try:
-                        file_path.unlink()
-                    except Exception:
-                        pass
-
-            st.cache_resource.clear()
-            st.success(
-                "WBBL database delete ho gayi. "
-                "Ab fresh WBBL data download hoga."
-            )
-            st.rerun()
-
     try:
         database_path = ensure_database(league)
         connection = get_connection(
@@ -1619,7 +1590,7 @@ st.session_state.win_probability = (
     auto_model["win_probability"]
 )
 
-# AUTO session line updates after every ball.
+# Session line auto-updates every ball in AUTO mode.
 if not st.session_state.manual_mode:
     st.session_state.session_low = int(
         auto_model["low"]
