@@ -1,6 +1,7 @@
 import hmac
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import urllib.request
@@ -50,18 +51,18 @@ st.html(
         padding-top: 0 !important;
     }
 
-    [data-testid="stHeader"] button,
+    header[data-testid="stHeader"] button,
     [data-testid="collapsedControl"] {
         background: #12365f !important;
         color: #ffffff !important;
         border-radius: 50% !important;
-        top: 10px !important;
+        top: 28px !important;
         left: 10px !important;
         position: relative !important;
         box-shadow: 0 2px 6px rgba(0,0,0,0.4) !important;
     }
 
-    [data-testid="stHeader"] svg {
+    header[data-testid="stHeader"] svg {
         color: #ffffff !important;
         fill: #ffffff !important;
     }
@@ -218,10 +219,28 @@ DATABASES = {
 DOWNLOAD_URLS = {
     "IPL": "https://cricsheet.org/downloads/ipl_json.zip",
     "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
-    "Women's Big Bash League": "https://cricsheet.org/downloads/wbbl_json.zip",
 }
 
+LEAGUE_PAGE_NAMES = {
+    "IPL": "Indian Premier League",
+    "Men's Big Bash League": "Big Bash League",
+    "Women's Big Bash League": "Women's Big Bash League",
+}
+
+DOWNLOADS_PAGE = "https://cricsheet.org/downloads/"
+
+FALLBACK_WBBL_URLS = [
+    "https://cricsheet.org/downloads/wbbl_json.zip",
+    "https://cricsheet.org/downloads/women-s-big-bash-league_json.zip",
+]
+
 LEAGUES = list(DATABASES.keys())
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/122.0 Safari/537.36"
+)
 
 
 # ============================================================
@@ -236,7 +255,6 @@ def parse_ball(value):
             return None
 
         over_text, ball_text = text.split(".", 1)
-
         over = int(over_text)
         ball = int(ball_text)
 
@@ -268,11 +286,7 @@ def get_table_names(connection):
     return {
         row[0]
         for row in connection.execute(
-            """
-            SELECT name
-            FROM sqlite_master
-            WHERE type='table'
-            """
+            "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
     }
 
@@ -337,28 +351,18 @@ def migrate_database(database_path):
     try:
         tables = get_table_names(connection)
 
-        if "deliveries" not in tables:
+        if "deliveries" not in tables or "matches" not in tables:
             return
 
-        columns = get_table_columns(
-            connection,
-            "deliveries",
-        )
+        columns = get_table_columns(connection, "deliveries")
 
         if "ball_pos" not in columns:
             connection.execute(
-                """
-                ALTER TABLE deliveries
-                ADD COLUMN ball_pos INTEGER
-                """
+                "ALTER TABLE deliveries ADD COLUMN ball_pos INTEGER"
             )
 
             rows = connection.execute(
-                """
-                SELECT id, ball_no
-                FROM deliveries
-                WHERE ball_pos IS NULL
-                """
+                "SELECT id, ball_no FROM deliveries WHERE ball_pos IS NULL"
             ).fetchall()
 
             updates = []
@@ -371,11 +375,7 @@ def migrate_database(database_path):
 
             if updates:
                 connection.executemany(
-                    """
-                    UPDATE deliveries
-                    SET ball_pos=?
-                    WHERE id=?
-                    """,
+                    "UPDATE deliveries SET ball_pos=? WHERE id=?",
                     updates,
                 )
 
@@ -384,6 +384,38 @@ def migrate_database(database_path):
 
     finally:
         connection.close()
+
+
+def database_is_valid(database_path):
+    if not database_path.exists():
+        return False
+
+    try:
+        connection = sqlite3.connect(
+            str(database_path),
+            timeout=30,
+        )
+
+        tables = get_table_names(connection)
+
+        if "matches" not in tables or "deliveries" not in tables:
+            connection.close()
+            return False
+
+        match_count = connection.execute(
+            "SELECT COUNT(*) FROM matches"
+        ).fetchone()[0]
+
+        delivery_count = connection.execute(
+            "SELECT COUNT(*) FROM deliveries"
+        ).fetchone()[0]
+
+        connection.close()
+
+        return match_count > 0 and delivery_count > 0
+
+    except Exception:
+        return False
 
 
 # ============================================================
@@ -445,7 +477,6 @@ def build_database(database_path, league, archive_path):
 
                 try:
                     data = json.loads(source_zip.read(filename))
-
                     info = data.get("info", {}) or {}
                     teams = info.get("teams", []) or []
 
@@ -453,7 +484,6 @@ def build_database(database_path, league, archive_path):
                         continue
 
                     outcome = info.get("outcome", {}) or {}
-
                     winner = str(
                         outcome.get("winner", "")
                         or outcome.get("eliminator", "")
@@ -464,12 +494,7 @@ def build_database(database_path, league, archive_path):
                     venue = str(info.get("venue", "") or "")
 
                     match_rows.append(
-                        (
-                            match_id,
-                            venue,
-                            winner,
-                            league,
-                        )
+                        (match_id, venue, winner, league)
                     )
 
                     innings_list = data.get("innings", []) or []
@@ -494,10 +519,7 @@ def build_database(database_path, league, archive_path):
                             "",
                         )
 
-                        for over_data in innings.get(
-                            "overs",
-                            [],
-                        ):
+                        for over_data in innings.get("overs", []) or []:
                             over_no = int(
                                 over_data.get("over", 0) or 0
                             )
@@ -530,15 +552,13 @@ def build_database(database_path, league, archive_path):
 
                                 runs = int(
                                     (
-                                        delivery.get("runs")
-                                        or {}
+                                        delivery.get("runs") or {}
                                     ).get("total", 0)
                                     or 0
                                 )
 
                                 wickets = len(
-                                    delivery.get("wickets")
-                                    or []
+                                    delivery.get("wickets") or []
                                 )
 
                                 delivery_rows.append(
@@ -560,10 +580,7 @@ def build_database(database_path, league, archive_path):
                         connection.executemany(
                             """
                             INSERT OR REPLACE INTO matches(
-                                match_id,
-                                venue,
-                                winner,
-                                league
+                                match_id, venue, winner, league
                             )
                             VALUES(?,?,?,?)
                             """,
@@ -575,16 +592,9 @@ def build_database(database_path, league, archive_path):
                         connection.executemany(
                             """
                             INSERT INTO deliveries(
-                                match_id,
-                                innings_no,
-                                batting_team,
-                                bowling_team,
-                                over_no,
-                                ball_no,
-                                ball_pos,
-                                runs,
-                                wickets,
-                                league
+                                match_id, innings_no, batting_team,
+                                bowling_team, over_no, ball_no,
+                                ball_pos, runs, wickets, league
                             )
                             VALUES(?,?,?,?,?,?,?,?,?,?)
                             """,
@@ -599,10 +609,7 @@ def build_database(database_path, league, archive_path):
             connection.executemany(
                 """
                 INSERT OR REPLACE INTO matches(
-                    match_id,
-                    venue,
-                    winner,
-                    league
+                    match_id, venue, winner, league
                 )
                 VALUES(?,?,?,?)
                 """,
@@ -613,16 +620,9 @@ def build_database(database_path, league, archive_path):
             connection.executemany(
                 """
                 INSERT INTO deliveries(
-                    match_id,
-                    innings_no,
-                    batting_team,
-                    bowling_team,
-                    over_no,
-                    ball_no,
-                    ball_pos,
-                    runs,
-                    wickets,
-                    league
+                    match_id, innings_no, batting_team,
+                    bowling_team, over_no, ball_no,
+                    ball_pos, runs, wickets, league
                 )
                 VALUES(?,?,?,?,?,?,?,?,?,?)
                 """,
@@ -638,8 +638,111 @@ def build_database(database_path, league, archive_path):
     temporary_path.replace(database_path)
 
 
+def fetch_page(url):
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": USER_AGENT},
+    )
+
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return response.read().decode("utf-8", errors="ignore")
+
+
+def discover_league_zip_url(league):
+    page_name = LEAGUE_PAGE_NAMES.get(league)
+
+    if not page_name:
+        return DOWNLOAD_URLS.get(league)
+
+    try:
+        html = fetch_page(DOWNLOADS_PAGE)
+    except Exception:
+        html = ""
+
+    escaped = re.escape(page_name)
+
+    pattern = (
+        escaped
+        + r".{0,4000}?href=[\"']([^\"']+\.zip)[\"']"
+    )
+
+    match = re.search(
+        pattern,
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    if match:
+        found_url = match.group(1)
+
+        if found_url.startswith("/"):
+            found_url = "https://cricsheet.org" + found_url
+
+        return found_url
+
+    if league == "Women's Big Bash League":
+        return FALLBACK_WBBL_URLS[0]
+
+    return DOWNLOAD_URLS.get(league)
+
+
+def download_archive(league, archive_path):
+    urls_to_try = []
+
+    discovered_url = discover_league_zip_url(league)
+
+    if discovered_url:
+        urls_to_try.append(discovered_url)
+
+    if league == "Women's Big Bash League":
+        for fallback_url in FALLBACK_WBBL_URLS:
+            if fallback_url not in urls_to_try:
+                urls_to_try.append(fallback_url)
+
+    if not urls_to_try:
+        raise RuntimeError(
+            f"No download URL available for league: {league}"
+        )
+
+    last_error = None
+
+    for download_url in urls_to_try:
+        try:
+            request = urllib.request.Request(
+                download_url,
+                headers={"User-Agent": USER_AGENT},
+            )
+
+            with urllib.request.urlopen(
+                request,
+                timeout=120,
+            ) as response, open(
+                archive_path,
+                "wb",
+            ) as output_file:
+                output_file.write(response.read())
+
+            return download_url
+
+        except Exception as download_error:
+            last_error = download_error
+            continue
+
+    raise RuntimeError(
+        f"Could not download {league} data. "
+        f"Tried URLs: {urls_to_try}. "
+        f"Last error: {last_error}"
+    )
+
+
 def ensure_database(league):
     database_path = DATABASES[league]
+
+    if database_path.exists() and not database_is_valid(database_path):
+        try:
+            database_path.unlink()
+        except Exception:
+            pass
 
     if database_path.exists():
         migrate_database(database_path)
@@ -654,13 +757,10 @@ def ensure_database(league):
         with tempfile.TemporaryDirectory() as temp_directory:
             archive_path = Path(temp_directory) / "matches.zip"
 
-            # Added User-Agent header to prevent 403/404 blocks from cricsheet
-            req = urllib.request.Request(
-                DOWNLOAD_URLS[league],
-                headers={'User-Agent': 'Mozilla/5.0'}
+            download_archive(
+                league,
+                archive_path,
             )
-            with urllib.request.urlopen(req) as response, open(archive_path, 'wb') as out_file:
-                out_file.write(response.read())
 
             build_database(
                 building_path,
@@ -668,12 +768,20 @@ def ensure_database(league):
                 archive_path,
             )
 
+        if not database_is_valid(building_path):
+            raise RuntimeError(
+                f"Built {league} database is empty or invalid."
+            )
+
         building_path.replace(database_path)
         return database_path
 
     except Exception:
         if building_path.exists():
-            building_path.unlink()
+            try:
+                building_path.unlink()
+            except Exception:
+                pass
 
         raise
 
@@ -739,6 +847,33 @@ def score_at(connection, match_id, innings_no, end_ball):
     )
 
 
+def session_runs_between(
+    connection,
+    match_id,
+    innings_no,
+    start_ball,
+    end_ball,
+):
+    row = connection.execute(
+        """
+        SELECT COALESCE(SUM(runs), 0) AS total_runs
+        FROM deliveries
+        WHERE match_id=?
+        AND innings_no=?
+        AND ball_pos>?
+        AND ball_pos<=?
+        """,
+        (
+            match_id,
+            innings_no,
+            start_ball,
+            end_ball,
+        ),
+    ).fetchone()
+
+    return int(row["total_runs"] or 0)
+
+
 def final_score(connection, match_id, innings_no):
     row = connection.execute(
         """
@@ -774,7 +909,7 @@ def match_winner(connection, match_id):
 
 
 # ============================================================
-# HISTORICAL MATCH MATCHING (WITH VENUE & TEAM FILTERS)
+# HISTORICAL DNA MATCHING
 # ============================================================
 
 def find_similar_states(
@@ -789,6 +924,12 @@ def find_similar_states(
     bowling_team,
     venue,
 ):
+    current_rr = (
+        (float(current_runs) / float(current_ball)) * 6
+        if current_ball > 0
+        else 0.0
+    )
+
     low_ball = max(1, int(current_ball) - 2)
     high_ball = min(
         int(end_ball),
@@ -837,7 +978,8 @@ def find_similar_states(
                 d.batting_team,
                 d.bowling_team
             FROM deliveries d
-            JOIN matches m ON d.match_id = m.match_id
+            JOIN matches m
+                ON d.match_id = m.match_id
             WHERE {where_sql}
             GROUP BY
                 d.match_id,
@@ -854,10 +996,15 @@ def find_similar_states(
         ).fetchall()
 
     candidates = []
+
     if venue and venue != "All Grounds":
         candidates = fetch_candidates("both", use_venue=True)
+
         if len(candidates) < 30:
-            candidates = fetch_candidates("batting", use_venue=True)
+            candidates = fetch_candidates(
+                "batting",
+                use_venue=True,
+            )
 
     if len(candidates) < 30:
         candidates = fetch_candidates("both", use_venue=False)
@@ -882,6 +1029,12 @@ def find_similar_states(
             historical_ball,
         )
 
+        historical_rr = (
+            (float(historical_runs) / float(historical_ball)) * 6
+            if historical_ball > 0
+            else 0.0
+        )
+
         run_gap = abs(
             historical_runs - int(current_runs)
         )
@@ -894,6 +1047,10 @@ def find_similar_states(
             historical_ball - int(current_ball)
         )
 
+        run_rate_gap = abs(
+            historical_rr - current_rr
+        )
+
         if run_gap > 35 or wicket_gap > 4:
             continue
 
@@ -901,6 +1058,7 @@ def find_similar_states(
             run_gap
             + (wicket_gap * 8)
             + (ball_gap * 2)
+            + (run_rate_gap * 4)
         )
 
         key = (
@@ -927,10 +1085,7 @@ def find_similar_states(
             best_states[key] = state
 
     states = list(best_states.values())
-
-    states.sort(
-        key=lambda item: item["distance"]
-    )
+    states.sort(key=lambda item: item["distance"])
 
     return states[:2500]
 
@@ -989,30 +1144,29 @@ def calculate_auto_model(
             "samples": 0,
         }
 
-    scores = []
+    session_scores = []
     weights = []
     win_results = []
 
     for state in states:
-        session_score, _ = score_at(
+        historical_session_runs = session_runs_between(
             connection,
             state["match_id"],
             state["innings_no"],
+            state["ball_pos"],
             end_ball,
         )
 
-        if session_score < state["runs"]:
-            session_score = final_score(
-                connection,
-                state["match_id"],
-                state["innings_no"],
-            )
+        projected_total = (
+            int(current_runs)
+            + historical_session_runs
+        )
 
         weight = 1.0 / (
             1.0 + float(state["distance"])
         )
 
-        scores.append(int(session_score))
+        session_scores.append(projected_total)
         weights.append(float(weight))
 
         historical_winner = match_winner(
@@ -1047,7 +1201,10 @@ def calculate_auto_model(
     else:
         expected = sum(
             score * weight
-            for score, weight in zip(scores, weights)
+            for score, weight in zip(
+                session_scores,
+                weights,
+            )
         ) / total_weight
 
     low = max(
@@ -1059,7 +1216,10 @@ def calculate_auto_model(
 
     yes_weight = sum(
         weight
-        for score, weight in zip(scores, weights)
+        for score, weight in zip(
+            session_scores,
+            weights,
+        )
         if score >= high
     )
 
@@ -1079,8 +1239,10 @@ def calculate_auto_model(
         win_probability = (
             sum(
                 result * weight
-                for result, weight
-                in zip(win_results, weights)
+                for result, weight in zip(
+                    win_results,
+                    weights,
+                )
             )
             / total_weight
             * 100
@@ -1136,19 +1298,18 @@ def calculate_manual_probability(
     yes_weight = 0.0
 
     for state in states:
-        session_score, _ = score_at(
+        historical_session_runs = session_runs_between(
             connection,
             state["match_id"],
             state["innings_no"],
+            state["ball_pos"],
             end_ball,
         )
 
-        if session_score < state["runs"]:
-            session_score = final_score(
-                connection,
-                state["match_id"],
-                state["innings_no"],
-            )
+        projected_total = (
+            int(current_runs)
+            + historical_session_runs
+        )
 
         weight = 1.0 / (
             1.0 + float(state["distance"])
@@ -1156,7 +1317,7 @@ def calculate_manual_probability(
 
         total_weight += weight
 
-        if session_score >= int(line_high):
+        if projected_total >= int(line_high):
             yes_weight += weight
 
     yes_probability = (
@@ -1210,7 +1371,6 @@ with st.sidebar:
 
     try:
         database_path = ensure_database(league)
-
         connection = get_connection(
             str(database_path.resolve())
         )
@@ -1819,9 +1979,11 @@ if final_win_probability is not None:
             </p>
 
             <p style="margin:5px 0 0">
-                {("Historical winner estimate"
-                  if innings_no == 1
-                  else f"Target: {target}")}
+                {(
+                    "Historical winner estimate"
+                    if innings_no == 1
+                    else f"Target: {target}"
+                )}
             </p>
         </div>
         """
