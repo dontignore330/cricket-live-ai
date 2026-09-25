@@ -88,7 +88,7 @@ st.html(
         margin-bottom: 10px;
     }
 
-    .session-box,
+    .projection-box,
     .winning-box,
     .historical-box {
         background: #0f223c;
@@ -108,7 +108,7 @@ st.html(
         min-height: 210px;
     }
 
-    .yes {
+    .positive {
         background: #07552f;
         border: 2px solid #20c77a;
         padding: 14px;
@@ -116,7 +116,7 @@ st.html(
         text-align: center;
     }
 
-    .no {
+    .negative {
         background: #651b1b;
         border: 2px solid #ef5350;
         padding: 14px;
@@ -812,12 +812,20 @@ def find_similar_states(
     batting_team,
     bowling_team,
     ground="",
+    exclude_match_id="",
 ):
     """Find comparable historical live states.
 
     Ground is a similarity feature rather than a hard filter, so the model
     can fall back to wider historical evidence when the selected venue has
     too few comparable states.
+
+    exclude_match_id: if the Cricsheet archive already contains the match
+    currently being analyzed (e.g. a just-finished 2026 match used for
+    backtesting), that match's own deliveries must NOT be allowed into its
+    own historical comparison pool - otherwise the model would partially
+    "see the future" and the test would be invalid. Pass that match's
+    Cricsheet match_id here to keep the search honestly historical.
     """
     low_ball = max(0, int(current_ball) - 2)
     high_ball = min(int(end_ball), int(current_ball) + 2)
@@ -829,6 +837,10 @@ def find_similar_states(
             AND d.ball_pos BETWEEN ? AND ?
         """
         params = [league, innings_no, low_ball, high_ball]
+
+        if exclude_match_id:
+            where_sql += " AND d.match_id<>?"
+            params.append(str(exclude_match_id).strip())
 
         if mode == "both":
             where_sql += """
@@ -949,6 +961,78 @@ def find_similar_states(
 
 
 # ============================================================
+# PAR SCORE (BASE-RATE PRIOR)
+# ============================================================
+#
+# This is the piece that answers "how does a bookie already know a
+# sensible number from ball 1?" - they are not purely reacting to the
+# live ball, they start from a strong prior: the average score teams
+# reach by this stage of the innings in this league (and at this ground),
+# built from thousands of past matches. As live, closely-matching
+# situations accumulate, the live signal is trusted more and the prior
+# fades out. That is exactly what CONFIDENCE_SAMPLES + blend_with_par
+# do below.
+
+CONFIDENCE_SAMPLES = 40.0
+
+
+def get_par_score(
+    connection,
+    league,
+    innings_no,
+    end_ball,
+    ground="",
+    exclude_match_id="",
+):
+    """Average score reached by end_ball across ALL matches in this
+    league/innings (optionally the same ground), independent of the
+    current live runs/wickets/teams. A stable "par score" baseline.
+    """
+    params = [league, innings_no, int(end_ball)]
+    join_sql = ""
+    extra_where = ""
+
+    if ground:
+        join_sql = "JOIN matches m ON m.match_id=d.match_id AND m.league=d.league"
+        extra_where += " AND m.venue=?"
+        params.append(ground)
+
+    if exclude_match_id:
+        extra_where += " AND d.match_id<>?"
+        params.append(str(exclude_match_id).strip())
+
+    query = f"""
+        SELECT AVG(inn_score) FROM (
+            SELECT d.match_id, SUM(d.runs) AS inn_score
+            FROM deliveries d
+            {join_sql}
+            WHERE d.league=?
+            AND d.innings_no=?
+            AND d.ball_pos<=?
+            {extra_where}
+            GROUP BY d.match_id
+        )
+    """
+
+    row = connection.execute(query, params).fetchone()
+    value = row[0] if row else None
+    return float(value) if value is not None else None
+
+
+def blend_with_par(estimate, samples, par_score):
+    """Shrink a low-sample similarity estimate toward the league/ground
+    par score. With >= CONFIDENCE_SAMPLES closely-matching live states,
+    the estimate is trusted almost fully; with very few, the par score
+    dominates instead of letting a handful of noisy matches swing wildly.
+    """
+    if par_score is None:
+        return float(estimate)
+
+    confidence = min(1.0, float(samples) / CONFIDENCE_SAMPLES)
+    return (confidence * float(estimate)) + ((1.0 - confidence) * float(par_score))
+
+
+# ============================================================
 # INDEPENDENT HISTORICAL AVERAGE
 # ============================================================
 
@@ -963,6 +1047,7 @@ def calculate_historical_average(
     batting_team,
     bowling_team,
     ground,
+    exclude_match_id="",
 ):
     """Calculate historical score independently of the live session line."""
     end_ball = int(session_over) * 6
@@ -986,6 +1071,7 @@ def calculate_historical_average(
         batting_team,
         bowling_team,
         ground,
+        exclude_match_id=exclude_match_id,
     )
 
     if not states:
@@ -1032,6 +1118,18 @@ def calculate_historical_average(
     total_weight = sum(weights)
     weighted_average = sum(v * w for v, w in zip(values, weights)) / total_weight
 
+    par_score = get_par_score(
+        connection,
+        league,
+        innings_no,
+        end_ball,
+        ground=ground,
+        exclude_match_id=exclude_match_id,
+    )
+
+    blended_average = blend_with_par(weighted_average, len(values), par_score)
+    shift = blended_average - weighted_average
+
     # Weighted 25th/75th percentile range, with a small fallback when needed.
     paired = sorted(zip(values, weights), key=lambda x: x[0])
     cumulative = 0.0
@@ -1049,11 +1147,11 @@ def calculate_historical_average(
             q75 = value
             break
 
-    low = max(int(current_runs), int(q25))
-    high = max(low, int(q75))
+    low = max(int(current_runs), int(round(q25 + shift)))
+    high = max(low, int(round(q75 + shift)))
 
     return {
-        "average": float(weighted_average),
+        "average": float(blended_average),
         "low": low,
         "high": high,
         "samples": len(values),
@@ -1076,6 +1174,7 @@ def calculate_auto_model(
     bowling_team,
     target,
     ground="",
+    exclude_match_id="",
 ):
     end_ball = int(session_over) * 6
 
@@ -1101,6 +1200,7 @@ def calculate_auto_model(
         batting_team,
         bowling_team,
         ground,
+        exclude_match_id=exclude_match_id,
     )
 
     if not states:
@@ -1133,6 +1233,14 @@ def calculate_auto_model(
                 state["innings_no"],
             )
 
+        # Same live-runs floor as calculate_historical_average: for the
+        # SAME team's own remaining innings, the eventual score at
+        # end_ball can never be lower than what has already been scored.
+        # Without this, a handful of unrelated historical matches with a
+        # lower session_score than the current live score were quietly
+        # pulling "expected" down and inflating the Stay-Under chance.
+        session_score = max(int(current_runs), int(session_score))
+
         weight = 1.0 / (1.0 + float(state["distance"]))
         scores.append(int(session_score))
         weights.append(float(weight))
@@ -1155,15 +1263,26 @@ def calculate_auto_model(
 
     total_weight = sum(weights)
 
-    expected = (
+    raw_expected = (
         sum(score * weight for score, weight in zip(scores, weights)) / total_weight
         if total_weight > 0
         else float(current_runs)
     )
 
-    # Keep the existing session-line output behavior: a one-run interval around
+    par_score = get_par_score(
+        connection,
+        league,
+        innings_no,
+        end_ball,
+        ground=ground,
+        exclude_match_id=exclude_match_id,
+    )
+
+    expected = blend_with_par(raw_expected, len(states), par_score)
+
+    # Keep the existing score-line output behavior: a one-run interval around
     # the model's expected result. The independent historical range is shown
-    # separately and does not use the session/bookie line.
+    # separately and does not use this line.
     low = max(int(current_runs), int(round(expected)))
     high = low + 1
 
@@ -1211,6 +1330,7 @@ def calculate_manual_probability(
     bowling_team,
     line_high,
     ground="",
+    exclude_match_id="",
 ):
     end_ball = int(session_over) * 6
 
@@ -1225,6 +1345,7 @@ def calculate_manual_probability(
         batting_team,
         bowling_team,
         ground,
+        exclude_match_id=exclude_match_id,
     )
 
     if not states:
@@ -1288,6 +1409,8 @@ DEFAULTS = {
     "historical_low": 0,
     "historical_high": 0,
     "historical_samples": 0,
+    "exclude_match_id": "",
+    "smooth_historical_average": False,
 }
 
 for key, value in DEFAULTS.items():
@@ -1367,7 +1490,7 @@ with st.sidebar:
     innings_no = 1 if innings_label == "1st Innings" else 2
 
     session_over = st.number_input(
-        "Session Over",
+        "Projection End Over",
         min_value=1,
         max_value=20,
         value=int(st.session_state.session_over),
@@ -1449,15 +1572,15 @@ with st.sidebar:
         st.session_state.last = ""
         st.rerun()
 
-    # Session line is operated only from the sidebar.
+    # Score-line prediction is operated only from the sidebar.
     st.markdown("---")
-    st.subheader("Session Run / Line")
+    st.subheader("Score Line Prediction")
 
     sidebar_low, sidebar_high = st.columns(2, gap="small")
 
     with sidebar_low:
         sidebar_session_low = st.number_input(
-            "Session Low",
+            "Score Line - Lower",
             min_value=0,
             max_value=400,
             value=int(st.session_state.session_low),
@@ -1467,7 +1590,7 @@ with st.sidebar:
 
     with sidebar_high:
         sidebar_session_high = st.number_input(
-            "Session High",
+            "Score Line - Upper",
             min_value=0,
             max_value=400,
             value=max(
@@ -1482,7 +1605,7 @@ with st.sidebar:
 
     with session_control_col:
         if st.button(
-            "Apply Session",
+            "Apply Line",
             use_container_width=True,
             key="sidebar_apply_session_button",
         ):
@@ -1496,7 +1619,7 @@ with st.sidebar:
 
     with auto_session_col:
         if st.button(
-            "Auto Session",
+            "Auto Update",
             use_container_width=True,
             key="sidebar_auto_session_button",
         ):
@@ -1504,7 +1627,7 @@ with st.sidebar:
             st.rerun()
 
     st.caption(
-        "Manual session line yahin se update karein. "
+        "Manual score line yahin se update karein. "
         "Har ball/event ke baad prediction current live state se refresh hoti hai."
     )
 
@@ -1523,6 +1646,36 @@ with st.sidebar:
         f"Target Over: {int(st.session_state.session_over)} • "
         "Updates after every ball/event"
     )
+
+    # ---- Advanced / Backtesting (new, opt-in, does not change default UI) ----
+    with st.expander("Advanced / Backtesting", expanded=False):
+        st.caption(
+            "Use this only when the match you are analyzing might already "
+            "exist inside the downloaded Cricsheet archive (e.g. testing a "
+            "2026 match after it has been added to the dataset). Excluding "
+            "its match_id stops the model from matching against itself."
+        )
+
+        exclude_match_id_input = st.text_input(
+            "Exclude Match ID (Cricsheet match_id)",
+            value=str(st.session_state.exclude_match_id),
+            key="exclude_match_id_widget",
+            placeholder="e.g. 1476123",
+        )
+
+        st.session_state.exclude_match_id = exclude_match_id_input.strip()
+
+        st.session_state.smooth_historical_average = st.checkbox(
+            "Smooth Historical Average (reduce ball-to-ball jitter)",
+            value=bool(st.session_state.smooth_historical_average),
+            key="smooth_historical_average_widget",
+            help=(
+                "Purely cosmetic: blends the displayed Historical Average "
+                "with its own last value so it does not jump sharply after "
+                "a single boundary/wicket. Does NOT change the Score Line, "
+                "Cross/Under percentages, or Win probability math."
+            ),
+        )
 
 
 # ============================================================
@@ -1551,6 +1704,7 @@ try:
         bowling_team=bowling_team,
         target=int(target),
         ground=ground,
+        exclude_match_id=st.session_state.exclude_match_id,
     )
 
     historical_model = calculate_historical_average(
@@ -1564,6 +1718,7 @@ try:
         batting_team=batting_team,
         bowling_team=bowling_team,
         ground=ground,
+        exclude_match_id=st.session_state.exclude_match_id,
     )
 
 except Exception as error:
@@ -1572,14 +1727,34 @@ except Exception as error:
     st.stop()
 
 
-# Session DNA auto output follows current live state every rerun/ball.
+# Expected score and Win/Loss probability must always stay LIVE and
+# independent of the manual session line - they recalc after every single
+# ball/event regardless of Auto or Manual mode. Only the Session Line
+# (session_low/session_high) is allowed to be frozen by the user in
+# Manual mode; everything else keeps tracking the current match state.
+st.session_state.expected_score = float(auto_model["expected"])
+st.session_state.win_probability = auto_model["win_probability"]
+
 if not st.session_state.manual_mode:
     st.session_state.session_low = int(auto_model["low"])
     st.session_state.session_high = int(auto_model["high"])
-    st.session_state.expected_score = float(auto_model["expected"])
-    st.session_state.win_probability = auto_model["win_probability"]
 
-st.session_state.historical_average = float(historical_model["average"])
+raw_historical_average = float(historical_model["average"])
+
+if (
+    st.session_state.smooth_historical_average
+    and int(historical_model["samples"]) > 0
+    and float(st.session_state.historical_average) > 0
+):
+    # Simple EMA: display value only, does not feed back into any
+    # Session Line / YES-NO / Win-Loss math.
+    st.session_state.historical_average = (
+        0.35 * raw_historical_average
+        + 0.65 * float(st.session_state.historical_average)
+    )
+else:
+    st.session_state.historical_average = raw_historical_average
+
 st.session_state.historical_low = int(historical_model["low"])
 st.session_state.historical_high = int(historical_model["high"])
 st.session_state.historical_samples = int(historical_model["samples"])
@@ -1600,7 +1775,7 @@ with score_column:
             </h2>
             <p class="small" style="margin:5px 0 0">
                 {display_over(balls)} ov
-                • Session End: {session_over} ov
+                • Projection End: {session_over} ov
                 • Target: {target if target > 0 else "Not set"}
                 • Ground: {ground or "—"}
                 • Last: {st.session_state.last or "—"}
@@ -1731,6 +1906,7 @@ if st.session_state.manual_mode:
             bowling_team=bowling_team,
             line_high=int(st.session_state.session_high),
             ground=ground,
+            exclude_match_id=st.session_state.exclude_match_id,
         )
 
         session_yes = float(manual_result["yes"])
@@ -1738,7 +1914,7 @@ if st.session_state.manual_mode:
         session_samples = int(manual_result["samples"])
 
     except Exception as error:
-        st.error("Manual session calculation failed.")
+        st.error("Manual line calculation failed.")
         st.exception(error)
         session_yes = 0.0
         session_no = 100.0
@@ -1750,19 +1926,29 @@ else:
     session_samples = int(auto_model["samples"])
 
 
-result_label = "YES" if session_yes >= session_no else "NO"
-result_class = "yes" if result_label == "YES" else "no"
-result_percent = max(session_yes, session_no)
+result_class = "positive" if session_yes >= session_no else "negative"
 
-st.subheader("VasuDev Result")
+confidence_label = (
+    "High"
+    if session_samples >= 150
+    else "Medium"
+    if session_samples >= 40
+    else "Low"
+)
+
+st.subheader("VasuDev Prediction")
 
 st.html(
     f"""
     <div class="{result_class}">
         <h1 style="margin:0">
-            SESSION {result_label}
-            — {result_percent:.1f}%
+            Score Line: {int(st.session_state.session_low)} - {int(st.session_state.session_high)}
         </h1>
+        <p style="margin:8px 0 0">
+            Cross Chance: <b>{session_yes:.1f}%</b>
+            •
+            Stay-Under Chance: <b>{session_no:.1f}%</b>
+        </p>
         <div style="margin-top:12px; padding-top:12px; border-top:1px solid #4777a8;">
             <p style="margin:0 0 6px">
                 Historical Average:
@@ -1775,6 +1961,7 @@ st.html(
             <p style="margin:5px 0 0">
                 Similar Historical Samples:
                 <b>{int(st.session_state.historical_samples)}</b>
+                • Confidence: <b>{confidence_label}</b>
             </p>
         </div>
     </div>
@@ -1795,11 +1982,11 @@ if final_win_probability is not None:
     if batting_win >= bowling_win:
         winner_name = batting_team
         winner_percent = batting_win
-        winner_class = "yes"
+        winner_class = "positive"
     else:
         winner_name = bowling_team
         winner_percent = bowling_win
-        winner_class = "no"
+        winner_class = "negative"
 
     st.html(
         f"""
@@ -1839,13 +2026,13 @@ with st.expander("Match & Analysis Details", expanded=False):
     )
     st.write(f"**Innings:** {innings_label}")
     st.write(f"**Ground / Venue:** {ground or '—'}")
-    st.write(f"**Session End:** {session_over} overs")
+    st.write(f"**Projection End:** {session_over} overs")
     st.write(
-        f"**Session Line:** {int(st.session_state.session_low)} - "
+        f"**Score Line:** {int(st.session_state.session_low)} - "
         f"{int(st.session_state.session_high)}"
     )
     st.write(
-        f"**Expected Session Score:** "
+        f"**Expected Score:** "
         f"{float(st.session_state.expected_score):.1f}"
     )
     st.write(
@@ -1861,8 +2048,8 @@ with st.expander("Match & Analysis Details", expanded=False):
         f"**Historical Comparable Samples:** "
         f"{int(st.session_state.historical_samples)}"
     )
-    st.write(f"**Session YES:** {session_yes:.1f}%")
-    st.write(f"**Session NO:** {session_no:.1f}%")
+    st.write(f"**Cross Chance:** {session_yes:.1f}%")
+    st.write(f"**Stay-Under Chance:** {session_no:.1f}%")
     st.write(f"**Similar Historical Matches:** {session_samples}")
 
     if final_win_probability is not None:
