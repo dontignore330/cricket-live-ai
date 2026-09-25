@@ -228,8 +228,7 @@ DOWNLOAD_URLS = {
     "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
     "Women's Big Bash League": "https://cricsheet.org/downloads/wbb_json.zip",
     "CSA Pro T20 Cup": [
-        "https://cricsheet.org/downloads/csa_t20_json.zip",
-        "https://cricsheet.org/downloads/csa_provincial_t20_json.zip",
+        "https://cricsheet.org/downloads/csa_t20_json.zip"
     ],
 }
 
