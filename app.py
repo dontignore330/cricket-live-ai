@@ -9,7 +9,6 @@ import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
-from datetime import datetime
 
 import streamlit as st
 
@@ -216,444 +215,38 @@ if not st.session_state.authenticated:
 
 BASE = Path(".")
 
-PRO20 = "CSA Pro20 Cup"
-
 DATABASES = {
     "IPL": BASE / "cricket_history.db",
     "Men's Big Bash League": BASE / "bbl_history.db",
     "Women's Big Bash League": BASE / "wbbl_history.db",
-    PRO20: BASE / "pro20_history.db",
+    "CSA Pro20 Cup": BASE / "pro20_history.db",
 }
 
 DOWNLOAD_URLS = {
     "IPL": "https://cricsheet.org/downloads/ipl_json.zip",
     "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
     "Women's Big Bash League": "https://cricsheet.org/downloads/wbbl_json.zip",
-    # Full South Africa archive is used only by the separate Pro20 builder.
-    # It is filtered to male T20 matches involving the 16 current Pro20 teams.
-    PRO20: "https://cricsheet.org/downloads/south_africa_json.zip",
 }
 
+PRO20 = "CSA Pro20 Cup"
+PRO20_DB = BASE / "pro20_history.db"
+PRO20_REFRESH_HOURS = 24
+PRO20_ARCHIVE_URLS = (
+    "https://cricsheet.org/downloads/ctc_json.zip",
+    "https://cricsheet.org/downloads/south_africa_male_json.zip",
+    "https://cricsheet.org/downloads/2026_json.zip",
+)
+
 PRO20_TEAMS = [
-    "Boland",
-    "CSA High Performance",
-    "WSB Eastern Storm",
-    "Flexbrands Knights",
-    "Mpumalanga Rhinos",
-    "Momentum Multiply Titans",
-    "Tuskers",
-    "YesPlay Cobras",
-    "Hollywoodbets Dolphins",
-    "Eastern Cape Iinyathi",
-    "Garden Route Badgers",
-    "Wenbro Impalas",
-    "DP World Lions",
-    "North West Dragons",
-    "Northern Cape Heat",
+    "Boland", "CSA High Performance", "WSB Eastern Storm",
+    "Flexbrands Knights", "Mpumalanga Rhinos", "Momentum Multiply Titans",
+    "Tuskers", "YesPlay Cobras", "Hollywoodbets Dolphins",
+    "Eastern Cape Iinyathi", "Garden Route Badgers", "Wenbro Impalas",
+    "DP World Lions", "North West Dragons", "Northern Cape Heat",
     "Dafabet Warriors",
 ]
 
-# Historical South African domestic team names are normalised to the current
-# 2026/27 Pro20 names. This affects ONLY the separate Pro20 database.
-PRO20_TEAM_ALIASES = {
-    "Boland": "Boland",
-    "Dafabet Boland": "Boland",
-    "Western Province": "YesPlay Cobras",
-    "Western Province Cricket": "YesPlay Cobras",
-    "Cape Cobras": "YesPlay Cobras",
-    "Cobras": "YesPlay Cobras",
-    "YesPlay Cobras": "YesPlay Cobras",
-    "Titans": "Momentum Multiply Titans",
-    "Northerns": "Momentum Multiply Titans",
-    "Northern Titans": "Momentum Multiply Titans",
-    "Momentum Multiply Titans": "Momentum Multiply Titans",
-    "Dolphins": "Hollywoodbets Dolphins",
-    "KwaZulu-Natal": "Hollywoodbets Dolphins",
-    "KwaZulu-Natal Coastal": "Hollywoodbets Dolphins",
-    "KZN Coastal": "Hollywoodbets Dolphins",
-    "Hollywoodbets Dolphins": "Hollywoodbets Dolphins",
-    "Lions": "DP World Lions",
-    "Highveld Lions": "DP World Lions",
-    "DP World Lions": "DP World Lions",
-    "Warriors": "Dafabet Warriors",
-    "Dafabet Warriors": "Dafabet Warriors",
-    "Eastern Cape Iinyathi": "Eastern Cape Iinyathi",
-    "Eastern Cape": "Eastern Cape Iinyathi",
-    "Eastern Province": "Eastern Cape Iinyathi",
-    "EP": "Eastern Cape Iinyathi",
-    "Knights": "Flexbrands Knights",
-    "Free State": "Flexbrands Knights",
-    "Free State Knights": "Flexbrands Knights",
-    "Flexbrands Knights": "Flexbrands Knights",
-    "Tuskers": "Tuskers",
-    "KZN Inland": "Tuskers",
-    "KwaZulu-Natal Inland": "Tuskers",
-    "KZN Inland Tuskers": "Tuskers",
-    "Mpumalanga Rhinos": "Mpumalanga Rhinos",
-    "Rhinos": "Mpumalanga Rhinos",
-    "Mpumalanga": "Mpumalanga Rhinos",
-    "Eastern Storm": "WSB Eastern Storm",
-    "Easterns": "WSB Eastern Storm",
-    "Eastern Province Easterns": "WSB Eastern Storm",
-    "WSB Eastern Storm": "WSB Eastern Storm",
-    "South Western Districts": "Garden Route Badgers",
-    "South Western Districts Eagles": "Garden Route Badgers",
-    "SWD": "Garden Route Badgers",
-    "Garden Route Badgers": "Garden Route Badgers",
-    "Limpopo Impalas": "Wenbro Impalas",
-    "Impalas": "Wenbro Impalas",
-    "Limpopo": "Wenbro Impalas",
-    "Wenbro Impalas": "Wenbro Impalas",
-    "North West": "North West Dragons",
-    "North-West": "North West Dragons",
-    "North West Province": "North West Dragons",
-    "North West Dragons": "North West Dragons",
-    "North-West Dragons": "North West Dragons",
-    "Dragons": "North West Dragons",
-    "Northern Cape": "Northern Cape Heat",
-    "Northern Cape Heat": "Northern Cape Heat",
-    "CSA High Performance": "CSA High Performance",
-    "CSA Emerging": "CSA High Performance",
-    "South Africa Emerging": "CSA High Performance",
-    "South African Emerging": "CSA High Performance",
-}
-
 LEAGUES = list(DATABASES.keys())
-
-
-# ============================================================
-# CSA PRO20 HELPERS
-# ============================================================
-
-def canonical_pro20_team(name):
-    text = str(name or "").strip()
-    if not text:
-        return ""
-    return PRO20_TEAM_ALIASES.get(text, text)
-
-
-def pro20_is_match(info):
-    """Return True only for male T20 domestic matches between Pro20 teams."""
-    if not isinstance(info, dict):
-        return False
-
-    if str(info.get("gender", "")).lower() != "male":
-        return False
-
-    if str(info.get("match_type", "")).upper() != "T20":
-        return False
-
-    raw_teams = info.get("teams", []) or []
-    teams = [canonical_pro20_team(x) for x in raw_teams]
-    teams = [x for x in teams if x]
-
-    # Both sides must belong to the current Pro20 ecosystem. This prevents
-    # South Africa internationals and SA20 franchises from entering the DB.
-    return len(teams) >= 2 and all(x in PRO20_TEAMS for x in teams[:2])
-
-
-def create_pro20_meta_tables(connection):
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS pro20_match_meta(
-            match_id TEXT PRIMARY KEY,
-            event_name TEXT,
-            season TEXT,
-            date TEXT,
-            city TEXT,
-            toss_winner TEXT,
-            toss_decision TEXT,
-            player_of_match TEXT,
-            source TEXT
-        )
-        """
-    )
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS pro20_players(
-            match_id TEXT,
-            team TEXT,
-            player TEXT,
-            PRIMARY KEY(match_id, team, player)
-        )
-        """
-    )
-    connection.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_pro20_meta_date
-        ON pro20_match_meta(date)
-        """
-    )
-    connection.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_pro20_players_team
-        ON pro20_players(team, player)
-        """
-    )
-
-
-def insert_pro20_match_metadata(connection, match_id, info, source):
-    teams = [canonical_pro20_team(x) for x in (info.get("teams", []) or [])]
-    outcome = info.get("outcome", {}) or {}
-    toss = info.get("toss", {}) or {}
-    event = info.get("event", {}) or {}
-    dates = info.get("dates", []) or []
-    players = info.get("players", {}) or {}
-    pom = info.get("player_of_match", []) or []
-
-    winner = canonical_pro20_team(
-        outcome.get("winner", "") or outcome.get("eliminator", "") or ""
-    )
-    toss_winner = canonical_pro20_team(toss.get("winner", ""))
-
-    # Keep the normal matches table aligned with the canonical team names.
-    connection.execute(
-        """
-        UPDATE matches
-        SET winner=?
-        WHERE match_id=? AND league=?
-        """,
-        (winner, str(match_id), PRO20),
-    )
-
-    connection.execute(
-        """
-        INSERT OR REPLACE INTO pro20_match_meta(
-            match_id, event_name, season, date, city,
-            toss_winner, toss_decision, player_of_match, source
-        ) VALUES(?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            str(match_id),
-            str(event.get("name", "") or ""),
-            str(info.get("season", "") or ""),
-            str(dates[0] if dates else ""),
-            str(info.get("city", "") or ""),
-            toss_winner,
-            str(toss.get("decision", "") or ""),
-            json.dumps(pom, ensure_ascii=False),
-            str(source or ""),
-        ),
-    )
-
-    connection.execute(
-        "DELETE FROM pro20_players WHERE match_id=?",
-        (str(match_id),),
-    )
-
-    for raw_team, player_list in players.items():
-        team = canonical_pro20_team(raw_team)
-        if team not in PRO20_TEAMS:
-            continue
-        for player in player_list or []:
-            player = str(player or "").strip()
-            if player:
-                connection.execute(
-                    "INSERT OR IGNORE INTO pro20_players(match_id, team, player) VALUES(?,?,?)",
-                    (str(match_id), team, player),
-                )
-
-
-def build_pro20_database(database_path, archive_path):
-    """Build the isolated CSA Pro20 DB from Cricsheet South Africa data."""
-    temporary_path = database_path.with_suffix(".tmp")
-    if temporary_path.exists():
-        temporary_path.unlink()
-
-    connection = sqlite3.connect(str(temporary_path), timeout=240)
-    connection.execute("PRAGMA journal_mode=OFF")
-    connection.execute("PRAGMA synchronous=OFF")
-    connection.execute("PRAGMA temp_store=MEMORY")
-
-    connection.execute(
-        """
-        CREATE TABLE matches(
-            match_id TEXT PRIMARY KEY,
-            venue TEXT,
-            winner TEXT,
-            league TEXT
-        )
-        """
-    )
-    connection.execute(
-        """
-        CREATE TABLE deliveries(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_id TEXT,
-            innings_no INTEGER,
-            batting_team TEXT,
-            bowling_team TEXT,
-            over_no INTEGER,
-            ball_no TEXT,
-            ball_pos INTEGER,
-            runs INTEGER,
-            wickets INTEGER,
-            league TEXT
-        )
-        """
-    )
-    create_pro20_meta_tables(connection)
-
-    match_rows = []
-    delivery_rows = []
-    accepted = 0
-
-    with zipfile.ZipFile(archive_path) as source_zip:
-        for filename in source_zip.namelist():
-            if not filename.lower().endswith(".json"):
-                continue
-
-            try:
-                data = json.loads(source_zip.read(filename))
-                info = data.get("info", {}) or {}
-                if not pro20_is_match(info):
-                    continue
-
-                raw_teams = info.get("teams", []) or []
-                teams = [canonical_pro20_team(x) for x in raw_teams]
-                teams = list(dict.fromkeys(teams))
-                if len(teams) < 2 or not all(t in PRO20_TEAMS for t in teams[:2]):
-                    continue
-
-                outcome = info.get("outcome", {}) or {}
-                winner = canonical_pro20_team(
-                    outcome.get("winner", "") or outcome.get("eliminator", "") or ""
-                )
-                match_id = Path(filename).stem
-                venue = str(info.get("venue", "") or "")
-
-                match_rows.append((match_id, venue, winner, PRO20))
-                accepted += 1
-
-                for innings_no, innings in enumerate(data.get("innings", []) or [], start=1):
-                    if innings.get("super_over"):
-                        continue
-
-                    batting_team = canonical_pro20_team(innings.get("team", ""))
-                    if batting_team not in PRO20_TEAMS:
-                        continue
-
-                    bowling_team = next((t for t in teams if t != batting_team), "")
-
-                    for over_data in innings.get("overs", []) or []:
-                        over_no = int(over_data.get("over", 0) or 0)
-                        for delivery_index, delivery in enumerate(over_data.get("deliveries", []) or [], start=1):
-                            actual_delivery = delivery.get("actual_delivery")
-                            ball_text = str(actual_delivery) if actual_delivery else f"{over_no}.{delivery_index}"
-                            ball_pos = parse_ball(ball_text)
-                            if ball_pos is None:
-                                continue
-
-                            runs = int((delivery.get("runs") or {}).get("total", 0) or 0)
-                            wickets = len(delivery.get("wickets") or [])
-                            delivery_rows.append((
-                                match_id, innings_no, batting_team, bowling_team,
-                                over_no, ball_text, ball_pos, runs, wickets, PRO20
-                            ))
-
-                if len(match_rows) >= 100:
-                    connection.executemany(
-                        "INSERT OR REPLACE INTO matches(match_id,venue,winner,league) VALUES(?,?,?,?)",
-                        match_rows,
-                    )
-                    match_rows.clear()
-
-                if len(delivery_rows) >= 8000:
-                    connection.executemany(
-                        """
-                        INSERT INTO deliveries(
-                            match_id, innings_no, batting_team, bowling_team,
-                            over_no, ball_no, ball_pos, runs, wickets, league
-                        ) VALUES(?,?,?,?,?,?,?,?,?,?)
-                        """,
-                        delivery_rows,
-                    )
-                    delivery_rows.clear()
-
-                insert_pro20_match_metadata(connection, match_id, info, "south_africa_json.zip")
-
-            except Exception:
-                # A malformed individual JSON must not abort the complete SA archive.
-                continue
-
-    if match_rows:
-        connection.executemany(
-            "INSERT OR REPLACE INTO matches(match_id,venue,winner,league) VALUES(?,?,?,?)",
-            match_rows,
-        )
-    if delivery_rows:
-        connection.executemany(
-            """
-            INSERT INTO deliveries(
-                match_id, innings_no, batting_team, bowling_team,
-                over_no, ball_no, ball_pos, runs, wickets, league
-            ) VALUES(?,?,?,?,?,?,?,?,?,?)
-            """,
-            delivery_rows,
-        )
-
-    create_indexes(connection)
-    connection.commit()
-
-    match_count = connection.execute(
-        "SELECT COUNT(*) FROM matches WHERE league=?", (PRO20,)
-    ).fetchone()[0]
-    delivery_count = connection.execute(
-        "SELECT COUNT(*) FROM deliveries WHERE league=?", (PRO20,)
-    ).fetchone()[0]
-
-    if accepted == 0 or match_count == 0 or delivery_count == 0:
-        connection.close()
-        temporary_path.unlink(missing_ok=True)
-        raise RuntimeError(
-            "CSA Pro20 build me koi usable South African domestic T20 match nahi mila."
-        )
-
-    connection.close()
-    temporary_path.replace(database_path)
-
-
-def pro20_database_is_stale(database_path, hours=24):
-    if not database_path.exists():
-        return True
-    try:
-        age = datetime.now().timestamp() - database_path.stat().st_mtime
-        return age > hours * 3600
-    except Exception:
-        return True
-
-
-def ensure_pro20_database(force=False):
-    """Create/refresh only the CSA Pro20 DB; never touches IPL/BBL/WBBL DBs."""
-    database_path = DATABASES[PRO20]
-    valid = database_is_valid(database_path, PRO20)
-    stale = pro20_database_is_stale(database_path, 24)
-
-    if valid and not force and not stale:
-        migrate_database(database_path)
-        return database_path
-
-    building_path = database_path.with_suffix(".building")
-    try:
-        if building_path.exists():
-            building_path.unlink()
-
-        with tempfile.TemporaryDirectory() as temp_directory:
-            archive_path = Path(temp_directory) / "south_africa.json.zip"
-            download_archive(DOWNLOAD_URLS[PRO20], archive_path)
-            build_pro20_database(building_path, archive_path)
-
-        if not database_is_valid(building_path, PRO20):
-            raise RuntimeError("CSA Pro20 database validation failed after build.")
-
-        building_path.replace(database_path)
-        return database_path
-    except Exception:
-        building_path.unlink(missing_ok=True)
-        if valid:
-            # Do not destroy a previously working DB just because a refresh failed.
-            return database_path
-        raise
 
 
 # ============================================================
@@ -738,9 +331,6 @@ def database_is_valid(database_path, league):
         tables = get_table_names(connection)
 
         if "matches" not in tables or "deliveries" not in tables:
-            return False
-
-        if league == PRO20 and ("pro20_match_meta" not in tables or "pro20_players" not in tables):
             return False
 
         delivery_columns = get_table_columns(connection, "deliveries")
@@ -1070,6 +660,140 @@ def build_database(database_path, league, archive_path):
     temporary_path.replace(database_path)
 
 
+# ============================================================
+# CSA PRO20 DATA BUILDER
+# ============================================================
+
+PRO20_ALIAS_RULES = {
+    "boland": "Boland", "dafabet boland": "Boland",
+    "cape cobras": "YesPlay Cobras", "cobras": "YesPlay Cobras",
+    "western province": "YesPlay Cobras", "yesplay cobras": "YesPlay Cobras",
+    "titans": "Momentum Multiply Titans", "northerns": "Momentum Multiply Titans",
+    "northern titans": "Momentum Multiply Titans", "momentum multiply titans": "Momentum Multiply Titans",
+    "knights": "Flexbrands Knights", "free state": "Flexbrands Knights",
+    "free state knights": "Flexbrands Knights", "flexbrands knights": "Flexbrands Knights",
+    "dolphins": "Hollywoodbets Dolphins", "kwazulu natal": "Hollywoodbets Dolphins",
+    "kwa zulu natal": "Hollywoodbets Dolphins", "kzn coastal": "Hollywoodbets Dolphins",
+    "hollywoodbets dolphins": "Hollywoodbets Dolphins",
+    "lions": "DP World Lions", "highveld lions": "DP World Lions", "dp world lions": "DP World Lions",
+    "warriors": "Dafabet Warriors", "dafabet warriors": "Dafabet Warriors",
+    "north west": "North West Dragons", "northwest": "North West Dragons",
+    "north west dragons": "North West Dragons", "northwest dragons": "North West Dragons",
+    "dragons": "North West Dragons",
+    "northern cape": "Northern Cape Heat", "northern cape heat": "Northern Cape Heat", "heat": "Northern Cape Heat",
+    "eastern province": "Eastern Cape Iinyathi", "eastern cape": "Eastern Cape Iinyathi",
+    "eastern cape iinyathi": "Eastern Cape Iinyathi", "eastern province iinyathi": "Eastern Cape Iinyathi",
+    "easterns": "WSB Eastern Storm", "eastern storm": "WSB Eastern Storm", "wsb eastern storm": "WSB Eastern Storm",
+    "limpopo impalas": "Wenbro Impalas", "impalas": "Wenbro Impalas", "wenbro impalas": "Wenbro Impalas",
+    "kzn inland": "Tuskers", "tuskers": "Tuskers", "kwazulu natal inland": "Tuskers",
+    "rhinos": "Mpumalanga Rhinos", "mpumalanga rhinos": "Mpumalanga Rhinos",
+    "south western districts": "Garden Route Badgers", "south western district": "Garden Route Badgers",
+    "garden route badgers": "Garden Route Badgers", "badgers": "Garden Route Badgers",
+    "csa emerging": "CSA High Performance", "south africa emerging": "CSA High Performance",
+    "csa high performance": "CSA High Performance",
+}
+
+def canonical_pro20_team(name):
+    text = " ".join(str(name or "").strip().lower().replace("&", "and").split())
+    return PRO20_ALIAS_RULES.get(text, str(name or "").strip())
+
+def build_pro20_database(database_path, archive_paths):
+    temporary_path = database_path.with_suffix(".tmp")
+    if temporary_path.exists(): temporary_path.unlink()
+    connection = sqlite3.connect(str(temporary_path), timeout=180)
+    seen_match_ids = set()
+    try:
+        connection.execute("PRAGMA journal_mode=OFF")
+        connection.execute("PRAGMA synchronous=OFF")
+        connection.execute("PRAGMA temp_store=MEMORY")
+        connection.execute("CREATE TABLE matches(match_id TEXT PRIMARY KEY, venue TEXT, winner TEXT, league TEXT)")
+        connection.execute("CREATE TABLE deliveries(id INTEGER PRIMARY KEY AUTOINCREMENT, match_id TEXT, innings_no INTEGER, batting_team TEXT, bowling_team TEXT, over_no INTEGER, ball_no TEXT, ball_pos INTEGER, runs INTEGER, wickets INTEGER, league TEXT)")
+        match_rows, delivery_rows = [], []
+        usable_matches = 0
+        json_files_seen = 0
+        for archive_path in archive_paths:
+            with zipfile.ZipFile(archive_path) as source_zip:
+                for filename in source_zip.namelist():
+                    if not filename.lower().endswith(".json"): continue
+                    json_files_seen += 1
+                    try:
+                        data = json.loads(source_zip.read(filename))
+                        info = data.get("info", {}) or {}
+                        if str(info.get("match_type", "")).strip().upper() != "T20": continue
+                        raw_teams = info.get("teams", []) or []
+                        if len(raw_teams) < 2: continue
+                        teams = [canonical_pro20_team(x) for x in raw_teams]
+                        if len(set(teams)) < 2 or not all(x in PRO20_TEAMS for x in teams): continue
+                        match_id = Path(filename).stem
+                        if match_id in seen_match_ids: continue
+                        seen_match_ids.add(match_id)
+                        outcome = info.get("outcome", {}) or {}
+                        winner = canonical_pro20_team(outcome.get("winner", "") or outcome.get("eliminator", "") or "")
+                        match_rows.append((match_id, str(info.get("venue", "") or ""), winner, PRO20))
+                        usable_matches += 1
+                        for innings_no, innings in enumerate(data.get("innings", []) or [], start=1):
+                            if innings.get("super_over"): continue
+                            batting_team = canonical_pro20_team(innings.get("team", ""))
+                            if batting_team not in PRO20_TEAMS: continue
+                            bowling_team = next((team for team in teams if team != batting_team), "")
+                            if bowling_team not in PRO20_TEAMS: continue
+                            for over_data in innings.get("overs", []) or []:
+                                over_no = int(over_data.get("over", 0) or 0)
+                                for delivery_index, delivery in enumerate(over_data.get("deliveries", []) or [], start=1):
+                                    actual_delivery = delivery.get("actual_delivery")
+                                    ball_text = str(actual_delivery) if actual_delivery else f"{over_no}.{delivery_index}"
+                                    ball_pos = parse_ball(ball_text)
+                                    if ball_pos is None: continue
+                                    runs = int((delivery.get("runs") or {}).get("total", 0) or 0)
+                                    wickets = len(delivery.get("wickets") or [])
+                                    delivery_rows.append((match_id, innings_no, batting_team, bowling_team, over_no, ball_text, ball_pos, runs, wickets, PRO20))
+                        if len(match_rows) >= 200:
+                            connection.executemany("INSERT OR REPLACE INTO matches(match_id,venue,winner,league) VALUES(?,?,?,?)", match_rows); match_rows.clear()
+                        if len(delivery_rows) >= 10000:
+                            connection.executemany("INSERT INTO deliveries(match_id,innings_no,batting_team,bowling_team,over_no,ball_no,ball_pos,runs,wickets,league) VALUES(?,?,?,?,?,?,?,?,?,?)", delivery_rows); delivery_rows.clear()
+                    except Exception:
+                        continue
+        if match_rows:
+            connection.executemany("INSERT OR REPLACE INTO matches(match_id,venue,winner,league) VALUES(?,?,?,?)", match_rows)
+        if delivery_rows:
+            connection.executemany("INSERT INTO deliveries(match_id,innings_no,batting_team,bowling_team,over_no,ball_no,ball_pos,runs,wickets,league) VALUES(?,?,?,?,?,?,?,?,?,?)", delivery_rows)
+        create_indexes(connection)
+        connection.commit()
+        delivery_count = connection.execute("SELECT COUNT(*) FROM deliveries WHERE league=?", (PRO20,)).fetchone()[0]
+        if json_files_seen == 0 or usable_matches == 0 or int(delivery_count) == 0:
+            raise RuntimeError("CSA Pro20 build me koi usable South African domestic T20 match nahi mila.")
+    finally:
+        connection.close()
+    temporary_path.replace(database_path)
+
+def ensure_pro20_database():
+    database_path = PRO20_DB
+    if database_is_valid(database_path, PRO20):
+        # Existing DB is retained for 24h; this prevents a temporary remote
+        # archive failure from breaking a previously working deployment.
+        import time
+        if time.time() - database_path.stat().st_mtime < PRO20_REFRESH_HOURS * 3600:
+            migrate_database(database_path)
+            return database_path
+    building_path = database_path.with_suffix(".building")
+    if building_path.exists(): building_path.unlink()
+    try:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            archive_paths = []
+            for index, url in enumerate(PRO20_ARCHIVE_URLS, start=1):
+                archive_path = Path(temp_directory) / f"pro20_source_{index}.zip"
+                download_archive(url, archive_path)
+                archive_paths.append(archive_path)
+            build_pro20_database(building_path, archive_paths)
+        if not database_is_valid(building_path, PRO20):
+            raise RuntimeError("CSA Pro20 database build completed but validation failed.")
+        building_path.replace(database_path)
+        return database_path
+    except Exception:
+        if building_path.exists(): building_path.unlink()
+        if database_is_valid(database_path, PRO20): return database_path
+        raise
+
 def download_archive(url, destination):
     """Download a Cricsheet archive with validation and a browser-like UA."""
     request = urllib.request.Request(
@@ -1147,7 +871,7 @@ def ensure_database(league):
 
 
 @st.cache_resource
-def get_connection(database_path_text, database_version=0):
+def get_connection(database_path_text):
     database_path = Path(database_path_text)
     migrate_database(database_path)
 
@@ -1741,25 +1465,14 @@ with st.sidebar:
 
     try:
         database_path = ensure_database(league)
-        database_version = database_path.stat().st_mtime_ns if database_path.exists() else 0
-        connection = get_connection(str(database_path.resolve()), database_version)
+        connection = get_connection(str(database_path.resolve()))
     except Exception as error:
         st.error("Database start nahi ho saka.")
         st.exception(error)
         st.stop()
 
     if league == PRO20:
-        if st.button("Refresh CSA Pro20 Data", use_container_width=True, key="refresh_pro20_data"):
-            try:
-                database_path = ensure_pro20_database(force=True)
-                st.cache_resource.clear()
-                st.rerun()
-            except Exception as refresh_error:
-                st.error("CSA Pro20 data refresh nahi ho saka.")
-                st.exception(refresh_error)
-
-    if league == PRO20:
-        teams = PRO20_TEAMS.copy()
+        teams = list(PRO20_TEAMS)
     else:
         teams = get_values(
             connection,
@@ -2307,38 +2020,6 @@ else:
     else:
         st.info("Winning estimate ke liye sufficient historical result data nahi mila.")
 
-
-# ============================================================
-# CSA PRO20 DATA SUMMARY
-# ============================================================
-if league == PRO20:
-    try:
-        pro20_match_count = connection.execute(
-            "SELECT COUNT(*) FROM matches WHERE league=?", (PRO20,)
-        ).fetchone()[0]
-        pro20_delivery_count = connection.execute(
-            "SELECT COUNT(*) FROM deliveries WHERE league=?", (PRO20,)
-        ).fetchone()[0]
-        pro20_player_count = connection.execute(
-            "SELECT COUNT(DISTINCT player) FROM pro20_players"
-        ).fetchone()[0]
-        pro20_toss_count = connection.execute(
-            "SELECT COUNT(*) FROM pro20_match_meta WHERE toss_winner<>''"
-        ).fetchone()[0]
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Pro20 Matches", f"{pro20_match_count:,}")
-        c2.metric("Ball Records", f"{pro20_delivery_count:,}")
-        c3.metric("Players", f"{pro20_player_count:,}")
-        c4.metric("Toss Records", f"{pro20_toss_count:,}")
-
-        st.caption(
-            "CSA Pro20 uses a separate South Africa-only T20 database. "
-            "The 16 current Pro20 teams are kept in the selector even when a team has limited historical coverage. "
-            "Cricsheet's JSON format includes players and toss metadata as part of match information."
-        )
-    except Exception:
-        pass
 
 # ============================================================
 # DETAILS
