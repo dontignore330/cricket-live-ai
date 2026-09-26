@@ -4,6 +4,7 @@
 import hmac
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import urllib.request
@@ -172,6 +173,73 @@ st.html(
 
 
 # ============================================================
+# SESSION PERSISTENCE (refresh should NOT log out or lose progress)
+# ============================================================
+#
+# Streamlit's st.session_state is tied to the browser tab's session; a full
+# page refresh starts a brand new session and would normally reset
+# everything, including the login and the whole match situation. To avoid
+# that, the relevant state is mirrored to a small file on the server's own
+# disk (the same persistent location the .db files already live on) and
+# restored from there whenever a fresh session shows up with nothing in
+# memory yet. Explicit "Logout" is the only thing that clears it.
+
+SESSION_STATE_FILE = Path(".vasudev_session_state.json")
+
+PERSISTED_KEYS = [
+    "authenticated",
+    "runs", "wickets", "balls", "last", "undo_stack", "target",
+    "win_probability", "historical_average", "historical_low",
+    "historical_high", "historical_samples",
+    "projection_end_over", "score_prediction",
+    "analyzed", "analyze_cross", "analyze_under", "analyze_samples",
+    # Last-picked dropdown values are stored separately from the widgets'
+    # own keys (see the sidebar) and re-validated against that widget's
+    # CURRENT options before use, so a team/ground list changing after a
+    # database rebuild can never restore an option that no longer exists.
+    "persisted_league",
+    "persisted_batting_team",
+    "persisted_bowling_team",
+    "persisted_ground",
+    "persisted_innings_label",
+]
+
+
+def load_persisted_session():
+    try:
+        if SESSION_STATE_FILE.exists():
+            data = json.loads(SESSION_STATE_FILE.read_text())
+            for key, value in data.items():
+                st.session_state.setdefault(key, value)
+    except Exception:
+        pass
+
+
+def save_persisted_session():
+    try:
+        snapshot = {
+            key: st.session_state[key]
+            for key in PERSISTED_KEYS
+            if key in st.session_state
+        }
+        SESSION_STATE_FILE.write_text(json.dumps(snapshot))
+    except Exception:
+        pass
+
+
+def clear_persisted_session():
+    try:
+        if SESSION_STATE_FILE.exists():
+            SESSION_STATE_FILE.unlink()
+    except Exception:
+        pass
+
+
+if "authenticated" not in st.session_state:
+    load_persisted_session()
+
+
+# ============================================================
 # PASSWORD
 # ============================================================
 
@@ -202,6 +270,7 @@ if not st.session_state.authenticated:
         if hmac.compare_digest(entered_password, PASSWORD):
             st.session_state.authenticated = True
             st.session_state.pop("login_password_input", None)
+            save_persisted_session()
             st.rerun()
         else:
             st.error("Incorrect password.")
@@ -215,22 +284,66 @@ if not st.session_state.authenticated:
 
 BASE = Path(".")
 
+# CSA Pro T20 Cup (2026-) is the new unified 16-team South African domestic
+# T20 competition (merging what used to be run as two separately-named
+# competitions - the old "CSA T20 Challenge" Division 1 and the "CSA T20
+# Knock-Out Competition" Division 2). Cricsheet has no single dedicated zip
+# for this brand-new tournament yet, but it does publish a per-team archive
+# for every team it tracks - so this league is built by downloading and
+# merging each of these 16 teams' own archives, keeping only matches where
+# BOTH sides are one of these 16 (see build_database's restrict_teams).
+CSA_PRO_T20_TEAMS = [
+    "Eastern Storm",
+    "South Africa Emerging",
+    "Titans",
+    "Dolphins",
+    "Warriors",
+    "Lions",
+    "Knights",
+    "Western Province",
+    "Northern Cape Heat",
+    "Mpumalanga Rhinos",
+    "Tuskers",
+    "Eastern Cape Iinyathi",
+    "Limpopo Impalas",
+    "North West Dragons",
+    "Rocks",
+    "Garden Route Badgers",
+]
+
+
+def team_slug(name):
+    """Cricsheet's own naming convention for its per-team archive files."""
+    slug = re.sub(r"[^a-z0-9]+", "_", name.lower().strip())
+    return slug.strip("_")
+
+
 DATABASES = {
     "IPL": BASE / "cricket_history.db",
     "Men's Big Bash League": BASE / "bbl_history.db",
     "Women's Big Bash League": BASE / "wbbl_history.db",
-    "CSA T20 Challenge": BASE / "csa_t20_history.db",
+    "CSA Pro T20 Cup": BASE / "csa_pro_t20_history.db",
 }
 
 DOWNLOAD_URLS = {
     "IPL": "https://cricsheet.org/downloads/ipl_json.zip",
     "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
     "Women's Big Bash League": "https://cricsheet.org/downloads/wbb_json.zip",
-    # Verified against cricsheet.org/downloads - "CSA T20 Challenge" is its
-    # own tracked competition there (314 matches, both its divisions
-    # already included together), with its own dedicated archive. No
-    # manual team-name merging needed - same pipeline as IPL/BBL/WBBL.
-    "CSA T20 Challenge": "https://cricsheet.org/downloads/ctc_json.zip",
+    # A LIST here (instead of one URL) signals a multi-archive merge league
+    # to ensure_database/build_database - one zip per team, since Cricsheet
+    # does not track "CSA Pro T20 Cup" as a single named competition.
+    "CSA Pro T20 Cup": [
+        f"https://cricsheet.org/downloads/{team_slug(team)}_male_json.zip"
+        for team in CSA_PRO_T20_TEAMS
+    ],
+}
+
+# Leagues built by merging several team archives need a team allow-list, so
+# a match against some unrelated opponent (e.g. a warm-up game, or an older
+# tournament that reused a team's name) never leaks in. Every other league
+# downloads one already-scoped competition zip and needs no such filter.
+RESTRICT_TEAMS = {
+    "CSA Pro T20 Cup": {team.strip().lower() for team in CSA_PRO_T20_TEAMS},
 }
 
 LEAGUES = list(DATABASES.keys())
@@ -449,7 +562,7 @@ def migrate_database(database_path):
 # DATABASE BUILDER
 # ============================================================
 
-def build_database(database_path, league, archive_path):
+def build_database(database_path, league, archive_paths, restrict_teams=None):
     temporary_path = database_path.with_suffix(".tmp")
 
     if temporary_path.exists():
@@ -495,140 +608,161 @@ def build_database(database_path, league, archive_path):
         match_rows = []
         delivery_rows = []
         json_files_seen = 0
+        seen_match_ids = set()
 
-        with zipfile.ZipFile(archive_path) as source_zip:
-            for filename in source_zip.namelist():
-                if not filename.lower().endswith(".json"):
-                    continue
-
-                json_files_seen += 1
-
-                try:
-                    data = json.loads(source_zip.read(filename))
-                    info = data.get("info", {}) or {}
-                    teams = info.get("teams", []) or []
-
-                    if len(teams) < 2:
+        for archive_path in archive_paths:
+            with zipfile.ZipFile(archive_path) as source_zip:
+                for filename in source_zip.namelist():
+                    if not filename.lower().endswith(".json"):
                         continue
 
-                    outcome = info.get("outcome", {}) or {}
-                    winner = str(
-                        outcome.get("winner", "")
-                        or outcome.get("eliminator", "")
-                        or ""
-                    )
-
                     match_id = Path(filename).stem
-                    venue = str(info.get("venue", "") or "")
 
-                    # Season year used for recency weighting AND for
-                    # deciding "current teams" in the sidebar. Cricsheet's
-                    # own "season" label (e.g. "2025/26") is preferred
-                    # because it groups an entire tournament consistently
-                    # even when it spans a calendar-year boundary (e.g.
-                    # CSA T20 Challenge runs Oct-Feb). Using the individual
-                    # match date's year instead would incorrectly split
-                    # such a tournament into two different "seasons" -
-                    # which is exactly what silently hid Division 2 teams
-                    # (matches played in the Oct-Dec part of the season)
-                    # from the "latest season only" team list, while
-                    # Division 1 teams (played in the Jan-Feb part) still
-                    # showed up. Real fix, not a guess: only the priority
-                    # order changed, no value is invented.
-                    season_year = None
-                    season_field = str(info.get("season", "") or "")
-                    digits = "".join(ch for ch in season_field if ch.isdigit())
-                    if len(digits) >= 4:
-                        try:
-                            season_year = int(digits[:4])
-                        except ValueError:
-                            season_year = None
+                    # A match between two of our merge-league's teams
+                    # appears in BOTH teams' individual archives - keep
+                    # it only the first time we see it.
+                    if match_id in seen_match_ids:
+                        continue
 
-                    if season_year is None:
-                        match_dates = info.get("dates") or []
-                        if match_dates:
-                            try:
-                                season_year = int(str(match_dates[0])[:4])
-                            except (ValueError, TypeError):
-                                season_year = None
+                    json_files_seen += 1
 
-                    match_rows.append(
-                        (match_id, venue, winner, league, season_year)
-                    )
+                    try:
+                        data = json.loads(source_zip.read(filename))
+                        info = data.get("info", {}) or {}
+                        teams = info.get("teams", []) or []
 
-                    innings_list = data.get("innings", []) or []
-
-                    for innings_no, innings in enumerate(innings_list, start=1):
-                        if innings.get("super_over"):
+                        if len(teams) < 2:
                             continue
 
-                        batting_team = str(innings.get("team", "") or "")
-                        bowling_team = next(
-                            (team for team in teams if team != batting_team),
-                            "",
+                        if restrict_teams is not None:
+                            team_names_lower = {
+                                str(t).strip().lower() for t in teams
+                            }
+                            if not team_names_lower.issubset(restrict_teams):
+                                # A match against an opponent outside our
+                                # known 16 (e.g. a warm-up fixture) - skip,
+                                # it is not part of this merged league.
+                                continue
+
+                        seen_match_ids.add(match_id)
+
+                        outcome = info.get("outcome", {}) or {}
+                        winner = str(
+                            outcome.get("winner", "")
+                            or outcome.get("eliminator", "")
+                            or ""
                         )
 
-                        for over_data in innings.get("overs", []) or []:
-                            over_no = int(over_data.get("over", 0) or 0)
-                            deliveries = over_data.get("deliveries", []) or []
+                        venue = str(info.get("venue", "") or "")
 
-                            for delivery_index, delivery in enumerate(deliveries, start=1):
-                                actual_delivery = delivery.get("actual_delivery")
-                                ball_text = (
-                                    str(actual_delivery)
-                                    if actual_delivery
-                                    else f"{over_no}.{delivery_index}"
-                                )
+                        # Season year used for recency weighting AND for
+                        # deciding "current teams" in the sidebar. Cricsheet's
+                        # own "season" label (e.g. "2025/26") is preferred
+                        # because it groups an entire tournament consistently
+                        # even when it spans a calendar-year boundary (e.g.
+                        # CSA T20 Challenge runs Oct-Feb). Using the individual
+                        # match date's year instead would incorrectly split
+                        # such a tournament into two different "seasons" -
+                        # which is exactly what silently hid Division 2 teams
+                        # (matches played in the Oct-Dec part of the season)
+                        # from the "latest season only" team list, while
+                        # Division 1 teams (played in the Jan-Feb part) still
+                        # showed up. Real fix, not a guess: only the priority
+                        # order changed, no value is invented.
+                        season_year = None
+                        season_field = str(info.get("season", "") or "")
+                        digits = "".join(ch for ch in season_field if ch.isdigit())
+                        if len(digits) >= 4:
+                            try:
+                                season_year = int(digits[:4])
+                            except ValueError:
+                                season_year = None
 
-                                ball_pos = parse_ball(ball_text)
-                                if ball_pos is None:
-                                    continue
+                        if season_year is None:
+                            match_dates = info.get("dates") or []
+                            if match_dates:
+                                try:
+                                    season_year = int(str(match_dates[0])[:4])
+                                except (ValueError, TypeError):
+                                    season_year = None
 
-                                runs = int((delivery.get("runs") or {}).get("total", 0) or 0)
-                                wickets = len(delivery.get("wickets") or [])
+                        match_rows.append(
+                            (match_id, venue, winner, league, season_year)
+                        )
 
-                                delivery_rows.append(
-                                    (
-                                        match_id,
-                                        innings_no,
-                                        batting_team,
-                                        bowling_team,
-                                        over_no,
-                                        ball_text,
-                                        ball_pos,
-                                        runs,
-                                        wickets,
-                                        league,
+                        innings_list = data.get("innings", []) or []
+
+                        for innings_no, innings in enumerate(innings_list, start=1):
+                            if innings.get("super_over"):
+                                continue
+
+                            batting_team = str(innings.get("team", "") or "")
+                            bowling_team = next(
+                                (team for team in teams if team != batting_team),
+                                "",
+                            )
+
+                            for over_data in innings.get("overs", []) or []:
+                                over_no = int(over_data.get("over", 0) or 0)
+                                deliveries = over_data.get("deliveries", []) or []
+
+                                for delivery_index, delivery in enumerate(deliveries, start=1):
+                                    actual_delivery = delivery.get("actual_delivery")
+                                    ball_text = (
+                                        str(actual_delivery)
+                                        if actual_delivery
+                                        else f"{over_no}.{delivery_index}"
                                     )
-                                )
 
-                    if len(match_rows) >= 200:
-                        connection.executemany(
-                            """
-                            INSERT OR REPLACE INTO matches(
-                                match_id, venue, winner, league, season
-                            ) VALUES(?,?,?,?,?)
-                            """,
-                            match_rows,
-                        )
-                        match_rows.clear()
+                                    ball_pos = parse_ball(ball_text)
+                                    if ball_pos is None:
+                                        continue
 
-                    if len(delivery_rows) >= 10000:
-                        connection.executemany(
-                            """
-                            INSERT INTO deliveries(
-                                match_id, innings_no, batting_team,
-                                bowling_team, over_no, ball_no,
-                                ball_pos, runs, wickets, league
-                            ) VALUES(?,?,?,?,?,?,?,?,?,?)
-                            """,
-                            delivery_rows,
-                        )
-                        delivery_rows.clear()
+                                    runs = int((delivery.get("runs") or {}).get("total", 0) or 0)
+                                    wickets = len(delivery.get("wickets") or [])
 
-                except Exception:
-                    # One malformed match should not destroy the whole archive.
-                    continue
+                                    delivery_rows.append(
+                                        (
+                                            match_id,
+                                            innings_no,
+                                            batting_team,
+                                            bowling_team,
+                                            over_no,
+                                            ball_text,
+                                            ball_pos,
+                                            runs,
+                                            wickets,
+                                            league,
+                                        )
+                                    )
+
+                        if len(match_rows) >= 200:
+                            connection.executemany(
+                                """
+                                INSERT OR REPLACE INTO matches(
+                                    match_id, venue, winner, league, season
+                                ) VALUES(?,?,?,?,?)
+                                """,
+                                match_rows,
+                            )
+                            match_rows.clear()
+
+                        if len(delivery_rows) >= 10000:
+                            connection.executemany(
+                                """
+                                INSERT INTO deliveries(
+                                    match_id, innings_no, batting_team,
+                                    bowling_team, over_no, ball_no,
+                                    ball_pos, runs, wickets, league
+                                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                                """,
+                                delivery_rows,
+                            )
+                            delivery_rows.clear()
+
+                    except Exception:
+                        # One malformed match should not destroy the whole archive.
+                        continue
 
         if match_rows:
             connection.executemany(
@@ -657,7 +791,7 @@ def build_database(database_path, league, archive_path):
 
         if json_files_seen == 0:
             raise RuntimeError(
-                f"No JSON match files found in the {league} archive."
+                f"No usable JSON match files found for {league}."
             )
 
         delivery_count = connection.execute(
@@ -672,7 +806,7 @@ def build_database(database_path, league, archive_path):
 
         if int(delivery_count) == 0 or int(match_count) == 0:
             raise RuntimeError(
-                f"{league} archive was downloaded but no usable match data was built."
+                f"{league} archive(s) downloaded but no usable match data was built."
             )
 
     finally:
@@ -725,20 +859,52 @@ def ensure_database(league):
             pass
 
     building_path = database_path.with_suffix(".building")
+    urls = DOWNLOAD_URLS[league]
+    is_merge_league = isinstance(urls, (list, tuple))
+    url_list = list(urls) if is_merge_league else [urls]
+    restrict_teams = RESTRICT_TEAMS.get(league)
 
     try:
         if building_path.exists():
             building_path.unlink()
 
         with tempfile.TemporaryDirectory() as temp_directory:
-            archive_path = Path(temp_directory) / "matches.zip"
-            download_archive(DOWNLOAD_URLS[league], archive_path)
+            archive_paths = []
+            failed_sources = []
+
+            for index, url in enumerate(url_list):
+                archive_path = Path(temp_directory) / f"matches_{index}.zip"
+                try:
+                    download_archive(url, archive_path)
+                    archive_paths.append(archive_path)
+                except Exception as download_error:
+                    # A per-team archive not existing on Cricsheet (e.g. a
+                    # team with no tracked matches yet) should not break the
+                    # whole merged league - skip it and keep going.
+                    failed_sources.append((url, str(download_error)))
+                    continue
+
+            if not archive_paths:
+                raise RuntimeError(
+                    f"Could not download any source archive for {league}. "
+                    f"Failures: {failed_sources}"
+                )
 
             build_database(
                 building_path,
                 league,
-                archive_path,
+                archive_paths,
+                restrict_teams=restrict_teams,
             )
+
+            if is_merge_league and failed_sources:
+                # Non-fatal: recorded so the sidebar can tell the person
+                # some team's individual history was unavailable rather
+                # than silently pretending coverage is complete.
+                st.session_state.setdefault("league_build_warnings", {})
+                st.session_state["league_build_warnings"][league] = [
+                    url for url, _ in failed_sources
+                ]
 
         if not database_is_valid(building_path, league):
             raise RuntimeError(
@@ -1584,11 +1750,25 @@ for key, value in DEFAULTS.items():
 with st.sidebar:
     st.header("Match Setup")
 
+    if st.button("Logout", use_container_width=True, key="logout_button"):
+        clear_persisted_session()
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+
+    def restored_index(options, persisted_key):
+        value = st.session_state.get(persisted_key)
+        if value in options:
+            return options.index(value)
+        return 0
+
     league = st.selectbox(
         "League",
         LEAGUES,
+        index=restored_index(LEAGUES, "persisted_league"),
         key="league_select",
     )
+    st.session_state["persisted_league"] = league
 
     try:
         database_path = ensure_database(league)
@@ -1597,6 +1777,13 @@ with st.sidebar:
         st.error("Database start nahi ho saka.")
         st.exception(error)
         st.stop()
+
+    build_warnings = st.session_state.get("league_build_warnings", {}).get(league)
+    if build_warnings:
+        st.warning(
+            f"{len(build_warnings)} team archive(s) could not be downloaded "
+            "for this league (that team's own history may be missing)."
+        )
 
     # Only team names from the league's most recently played season -
     # automatically drops defunct/renamed old franchise names (e.g.
@@ -1610,8 +1797,10 @@ with st.sidebar:
     batting_team = st.selectbox(
         "Batting Team",
         teams,
+        index=restored_index(teams, "persisted_batting_team"),
         key="batting_team_select",
     )
+    st.session_state["persisted_batting_team"] = batting_team
 
     bowling_options = [team for team in teams if team != batting_team]
     if not bowling_options:
@@ -1620,25 +1809,32 @@ with st.sidebar:
     bowling_team = st.selectbox(
         "Bowling Team",
         bowling_options,
+        index=restored_index(bowling_options, "persisted_bowling_team"),
         key="bowling_team_select",
     )
+    st.session_state["persisted_bowling_team"] = bowling_team
 
     grounds = get_grounds(connection, league)
     if grounds:
         ground = st.selectbox(
             "Ground / Venue",
             grounds,
+            index=restored_index(grounds, "persisted_ground"),
             key="ground_select",
         )
+        st.session_state["persisted_ground"] = ground
     else:
         ground = ""
         st.info("Ground data available nahi hai.")
 
+    innings_options = ["1st Innings", "2nd Innings"]
     innings_label = st.selectbox(
         "Innings",
-        ["1st Innings", "2nd Innings"],
+        innings_options,
+        index=restored_index(innings_options, "persisted_innings_label"),
         key="innings_select",
     )
+    st.session_state["persisted_innings_label"] = innings_label
 
     innings_no = 1 if innings_label == "1st Innings" else 2
 
@@ -2118,3 +2314,8 @@ with st.expander("Match & Analysis Details", expanded=False):
 st.caption(
     "Historical estimate only. This is not a guarantee of the live match result."
 )
+
+
+# Save the current state so a browser refresh restores it instead of
+# resetting to login/defaults. Only explicit Logout clears this.
+save_persisted_session()
