@@ -9,6 +9,7 @@ import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
+from datetime import datetime
 
 import streamlit as st
 
@@ -88,7 +89,7 @@ st.html(
         margin-bottom: 10px;
     }
 
-    .projection-box,
+    .session-box,
     .winning-box,
     .historical-box {
         background: #0f223c;
@@ -108,7 +109,7 @@ st.html(
         min-height: 210px;
     }
 
-    .positive {
+    .yes {
         background: #07552f;
         border: 2px solid #20c77a;
         padding: 14px;
@@ -116,7 +117,7 @@ st.html(
         text-align: center;
     }
 
-    .negative {
+    .no {
         background: #651b1b;
         border: 2px solid #ef5350;
         padding: 14px;
@@ -215,25 +216,444 @@ if not st.session_state.authenticated:
 
 BASE = Path(".")
 
+PRO20 = "CSA Pro20 Cup"
+
 DATABASES = {
     "IPL": BASE / "cricket_history.db",
     "Men's Big Bash League": BASE / "bbl_history.db",
     "Women's Big Bash League": BASE / "wbbl_history.db",
-    "CSA T20 Challenge": BASE / "csa_t20_history.db",
+    PRO20: BASE / "pro20_history.db",
 }
 
 DOWNLOAD_URLS = {
     "IPL": "https://cricsheet.org/downloads/ipl_json.zip",
     "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
-    "Women's Big Bash League": "https://cricsheet.org/downloads/wbb_json.zip",
-    # Verified against cricsheet.org/downloads - "CSA T20 Challenge" is its
-    # own tracked competition there (314 matches, both its divisions
-    # already included together), with its own dedicated archive. No
-    # manual team-name merging needed - same pipeline as IPL/BBL/WBBL.
-    "CSA T20 Challenge": "https://cricsheet.org/downloads/ctc_json.zip",
+    "Women's Big Bash League": "https://cricsheet.org/downloads/wbbl_json.zip",
+    # Full South Africa archive is used only by the separate Pro20 builder.
+    # It is filtered to male T20 matches involving the 16 current Pro20 teams.
+    PRO20: "https://cricsheet.org/downloads/south_africa_json.zip",
+}
+
+PRO20_TEAMS = [
+    "Boland",
+    "CSA High Performance",
+    "WSB Eastern Storm",
+    "Flexbrands Knights",
+    "Mpumalanga Rhinos",
+    "Momentum Multiply Titans",
+    "Tuskers",
+    "YesPlay Cobras",
+    "Hollywoodbets Dolphins",
+    "Eastern Cape Iinyathi",
+    "Garden Route Badgers",
+    "Wenbro Impalas",
+    "DP World Lions",
+    "North West Dragons",
+    "Northern Cape Heat",
+    "Dafabet Warriors",
+]
+
+# Historical South African domestic team names are normalised to the current
+# 2026/27 Pro20 names. This affects ONLY the separate Pro20 database.
+PRO20_TEAM_ALIASES = {
+    "Boland": "Boland",
+    "Dafabet Boland": "Boland",
+    "Western Province": "YesPlay Cobras",
+    "Western Province Cricket": "YesPlay Cobras",
+    "Cape Cobras": "YesPlay Cobras",
+    "Cobras": "YesPlay Cobras",
+    "YesPlay Cobras": "YesPlay Cobras",
+    "Titans": "Momentum Multiply Titans",
+    "Northerns": "Momentum Multiply Titans",
+    "Northern Titans": "Momentum Multiply Titans",
+    "Momentum Multiply Titans": "Momentum Multiply Titans",
+    "Dolphins": "Hollywoodbets Dolphins",
+    "KwaZulu-Natal": "Hollywoodbets Dolphins",
+    "KwaZulu-Natal Coastal": "Hollywoodbets Dolphins",
+    "KZN Coastal": "Hollywoodbets Dolphins",
+    "Hollywoodbets Dolphins": "Hollywoodbets Dolphins",
+    "Lions": "DP World Lions",
+    "Highveld Lions": "DP World Lions",
+    "DP World Lions": "DP World Lions",
+    "Warriors": "Dafabet Warriors",
+    "Dafabet Warriors": "Dafabet Warriors",
+    "Eastern Cape Iinyathi": "Eastern Cape Iinyathi",
+    "Eastern Cape": "Eastern Cape Iinyathi",
+    "Eastern Province": "Eastern Cape Iinyathi",
+    "EP": "Eastern Cape Iinyathi",
+    "Knights": "Flexbrands Knights",
+    "Free State": "Flexbrands Knights",
+    "Free State Knights": "Flexbrands Knights",
+    "Flexbrands Knights": "Flexbrands Knights",
+    "Tuskers": "Tuskers",
+    "KZN Inland": "Tuskers",
+    "KwaZulu-Natal Inland": "Tuskers",
+    "KZN Inland Tuskers": "Tuskers",
+    "Mpumalanga Rhinos": "Mpumalanga Rhinos",
+    "Rhinos": "Mpumalanga Rhinos",
+    "Mpumalanga": "Mpumalanga Rhinos",
+    "Eastern Storm": "WSB Eastern Storm",
+    "Easterns": "WSB Eastern Storm",
+    "Eastern Province Easterns": "WSB Eastern Storm",
+    "WSB Eastern Storm": "WSB Eastern Storm",
+    "South Western Districts": "Garden Route Badgers",
+    "South Western Districts Eagles": "Garden Route Badgers",
+    "SWD": "Garden Route Badgers",
+    "Garden Route Badgers": "Garden Route Badgers",
+    "Limpopo Impalas": "Wenbro Impalas",
+    "Impalas": "Wenbro Impalas",
+    "Limpopo": "Wenbro Impalas",
+    "Wenbro Impalas": "Wenbro Impalas",
+    "North West": "North West Dragons",
+    "North-West": "North West Dragons",
+    "North West Province": "North West Dragons",
+    "North West Dragons": "North West Dragons",
+    "North-West Dragons": "North West Dragons",
+    "Dragons": "North West Dragons",
+    "Northern Cape": "Northern Cape Heat",
+    "Northern Cape Heat": "Northern Cape Heat",
+    "CSA High Performance": "CSA High Performance",
+    "CSA Emerging": "CSA High Performance",
+    "South Africa Emerging": "CSA High Performance",
+    "South African Emerging": "CSA High Performance",
 }
 
 LEAGUES = list(DATABASES.keys())
+
+
+# ============================================================
+# CSA PRO20 HELPERS
+# ============================================================
+
+def canonical_pro20_team(name):
+    text = str(name or "").strip()
+    if not text:
+        return ""
+    return PRO20_TEAM_ALIASES.get(text, text)
+
+
+def pro20_is_match(info):
+    """Return True only for male T20 domestic matches between Pro20 teams."""
+    if not isinstance(info, dict):
+        return False
+
+    if str(info.get("gender", "")).lower() != "male":
+        return False
+
+    if str(info.get("match_type", "")).upper() != "T20":
+        return False
+
+    raw_teams = info.get("teams", []) or []
+    teams = [canonical_pro20_team(x) for x in raw_teams]
+    teams = [x for x in teams if x]
+
+    # Both sides must belong to the current Pro20 ecosystem. This prevents
+    # South Africa internationals and SA20 franchises from entering the DB.
+    return len(teams) >= 2 and all(x in PRO20_TEAMS for x in teams[:2])
+
+
+def create_pro20_meta_tables(connection):
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pro20_match_meta(
+            match_id TEXT PRIMARY KEY,
+            event_name TEXT,
+            season TEXT,
+            date TEXT,
+            city TEXT,
+            toss_winner TEXT,
+            toss_decision TEXT,
+            player_of_match TEXT,
+            source TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pro20_players(
+            match_id TEXT,
+            team TEXT,
+            player TEXT,
+            PRIMARY KEY(match_id, team, player)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_pro20_meta_date
+        ON pro20_match_meta(date)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_pro20_players_team
+        ON pro20_players(team, player)
+        """
+    )
+
+
+def insert_pro20_match_metadata(connection, match_id, info, source):
+    teams = [canonical_pro20_team(x) for x in (info.get("teams", []) or [])]
+    outcome = info.get("outcome", {}) or {}
+    toss = info.get("toss", {}) or {}
+    event = info.get("event", {}) or {}
+    dates = info.get("dates", []) or []
+    players = info.get("players", {}) or {}
+    pom = info.get("player_of_match", []) or []
+
+    winner = canonical_pro20_team(
+        outcome.get("winner", "") or outcome.get("eliminator", "") or ""
+    )
+    toss_winner = canonical_pro20_team(toss.get("winner", ""))
+
+    # Keep the normal matches table aligned with the canonical team names.
+    connection.execute(
+        """
+        UPDATE matches
+        SET winner=?
+        WHERE match_id=? AND league=?
+        """,
+        (winner, str(match_id), PRO20),
+    )
+
+    connection.execute(
+        """
+        INSERT OR REPLACE INTO pro20_match_meta(
+            match_id, event_name, season, date, city,
+            toss_winner, toss_decision, player_of_match, source
+        ) VALUES(?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            str(match_id),
+            str(event.get("name", "") or ""),
+            str(info.get("season", "") or ""),
+            str(dates[0] if dates else ""),
+            str(info.get("city", "") or ""),
+            toss_winner,
+            str(toss.get("decision", "") or ""),
+            json.dumps(pom, ensure_ascii=False),
+            str(source or ""),
+        ),
+    )
+
+    connection.execute(
+        "DELETE FROM pro20_players WHERE match_id=?",
+        (str(match_id),),
+    )
+
+    for raw_team, player_list in players.items():
+        team = canonical_pro20_team(raw_team)
+        if team not in PRO20_TEAMS:
+            continue
+        for player in player_list or []:
+            player = str(player or "").strip()
+            if player:
+                connection.execute(
+                    "INSERT OR IGNORE INTO pro20_players(match_id, team, player) VALUES(?,?,?)",
+                    (str(match_id), team, player),
+                )
+
+
+def build_pro20_database(database_path, archive_path):
+    """Build the isolated CSA Pro20 DB from Cricsheet South Africa data."""
+    temporary_path = database_path.with_suffix(".tmp")
+    if temporary_path.exists():
+        temporary_path.unlink()
+
+    connection = sqlite3.connect(str(temporary_path), timeout=240)
+    connection.execute("PRAGMA journal_mode=OFF")
+    connection.execute("PRAGMA synchronous=OFF")
+    connection.execute("PRAGMA temp_store=MEMORY")
+
+    connection.execute(
+        """
+        CREATE TABLE matches(
+            match_id TEXT PRIMARY KEY,
+            venue TEXT,
+            winner TEXT,
+            league TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE deliveries(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id TEXT,
+            innings_no INTEGER,
+            batting_team TEXT,
+            bowling_team TEXT,
+            over_no INTEGER,
+            ball_no TEXT,
+            ball_pos INTEGER,
+            runs INTEGER,
+            wickets INTEGER,
+            league TEXT
+        )
+        """
+    )
+    create_pro20_meta_tables(connection)
+
+    match_rows = []
+    delivery_rows = []
+    accepted = 0
+
+    with zipfile.ZipFile(archive_path) as source_zip:
+        for filename in source_zip.namelist():
+            if not filename.lower().endswith(".json"):
+                continue
+
+            try:
+                data = json.loads(source_zip.read(filename))
+                info = data.get("info", {}) or {}
+                if not pro20_is_match(info):
+                    continue
+
+                raw_teams = info.get("teams", []) or []
+                teams = [canonical_pro20_team(x) for x in raw_teams]
+                teams = list(dict.fromkeys(teams))
+                if len(teams) < 2 or not all(t in PRO20_TEAMS for t in teams[:2]):
+                    continue
+
+                outcome = info.get("outcome", {}) or {}
+                winner = canonical_pro20_team(
+                    outcome.get("winner", "") or outcome.get("eliminator", "") or ""
+                )
+                match_id = Path(filename).stem
+                venue = str(info.get("venue", "") or "")
+
+                match_rows.append((match_id, venue, winner, PRO20))
+                accepted += 1
+
+                for innings_no, innings in enumerate(data.get("innings", []) or [], start=1):
+                    if innings.get("super_over"):
+                        continue
+
+                    batting_team = canonical_pro20_team(innings.get("team", ""))
+                    if batting_team not in PRO20_TEAMS:
+                        continue
+
+                    bowling_team = next((t for t in teams if t != batting_team), "")
+
+                    for over_data in innings.get("overs", []) or []:
+                        over_no = int(over_data.get("over", 0) or 0)
+                        for delivery_index, delivery in enumerate(over_data.get("deliveries", []) or [], start=1):
+                            actual_delivery = delivery.get("actual_delivery")
+                            ball_text = str(actual_delivery) if actual_delivery else f"{over_no}.{delivery_index}"
+                            ball_pos = parse_ball(ball_text)
+                            if ball_pos is None:
+                                continue
+
+                            runs = int((delivery.get("runs") or {}).get("total", 0) or 0)
+                            wickets = len(delivery.get("wickets") or [])
+                            delivery_rows.append((
+                                match_id, innings_no, batting_team, bowling_team,
+                                over_no, ball_text, ball_pos, runs, wickets, PRO20
+                            ))
+
+                if len(match_rows) >= 100:
+                    connection.executemany(
+                        "INSERT OR REPLACE INTO matches(match_id,venue,winner,league) VALUES(?,?,?,?)",
+                        match_rows,
+                    )
+                    match_rows.clear()
+
+                if len(delivery_rows) >= 8000:
+                    connection.executemany(
+                        """
+                        INSERT INTO deliveries(
+                            match_id, innings_no, batting_team, bowling_team,
+                            over_no, ball_no, ball_pos, runs, wickets, league
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        delivery_rows,
+                    )
+                    delivery_rows.clear()
+
+                insert_pro20_match_metadata(connection, match_id, info, "south_africa_json.zip")
+
+            except Exception:
+                # A malformed individual JSON must not abort the complete SA archive.
+                continue
+
+    if match_rows:
+        connection.executemany(
+            "INSERT OR REPLACE INTO matches(match_id,venue,winner,league) VALUES(?,?,?,?)",
+            match_rows,
+        )
+    if delivery_rows:
+        connection.executemany(
+            """
+            INSERT INTO deliveries(
+                match_id, innings_no, batting_team, bowling_team,
+                over_no, ball_no, ball_pos, runs, wickets, league
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            """,
+            delivery_rows,
+        )
+
+    create_indexes(connection)
+    connection.commit()
+
+    match_count = connection.execute(
+        "SELECT COUNT(*) FROM matches WHERE league=?", (PRO20,)
+    ).fetchone()[0]
+    delivery_count = connection.execute(
+        "SELECT COUNT(*) FROM deliveries WHERE league=?", (PRO20,)
+    ).fetchone()[0]
+
+    if accepted == 0 or match_count == 0 or delivery_count == 0:
+        connection.close()
+        temporary_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            "CSA Pro20 build me koi usable South African domestic T20 match nahi mila."
+        )
+
+    connection.close()
+    temporary_path.replace(database_path)
+
+
+def pro20_database_is_stale(database_path, hours=24):
+    if not database_path.exists():
+        return True
+    try:
+        age = datetime.now().timestamp() - database_path.stat().st_mtime
+        return age > hours * 3600
+    except Exception:
+        return True
+
+
+def ensure_pro20_database(force=False):
+    """Create/refresh only the CSA Pro20 DB; never touches IPL/BBL/WBBL DBs."""
+    database_path = DATABASES[PRO20]
+    valid = database_is_valid(database_path, PRO20)
+    stale = pro20_database_is_stale(database_path, 24)
+
+    if valid and not force and not stale:
+        migrate_database(database_path)
+        return database_path
+
+    building_path = database_path.with_suffix(".building")
+    try:
+        if building_path.exists():
+            building_path.unlink()
+
+        with tempfile.TemporaryDirectory() as temp_directory:
+            archive_path = Path(temp_directory) / "south_africa.json.zip"
+            download_archive(DOWNLOAD_URLS[PRO20], archive_path)
+            build_pro20_database(building_path, archive_path)
+
+        if not database_is_valid(building_path, PRO20):
+            raise RuntimeError("CSA Pro20 database validation failed after build.")
+
+        building_path.replace(database_path)
+        return database_path
+    except Exception:
+        building_path.unlink(missing_ok=True)
+        if valid:
+            # Do not destroy a previously working DB just because a refresh failed.
+            return database_path
+        raise
 
 
 # ============================================================
@@ -320,6 +740,9 @@ def database_is_valid(database_path, league):
         if "matches" not in tables or "deliveries" not in tables:
             return False
 
+        if league == PRO20 and ("pro20_match_meta" not in tables or "pro20_players" not in tables):
+            return False
+
         delivery_columns = get_table_columns(connection, "deliveries")
         match_columns = get_table_columns(connection, "matches")
 
@@ -327,7 +750,7 @@ def database_is_valid(database_path, league):
             "match_id", "innings_no", "batting_team", "bowling_team",
             "ball_pos", "runs", "wickets", "league"
         }
-        required_match = {"match_id", "venue", "winner", "league", "season"}
+        required_match = {"match_id", "venue", "winner", "league"}
 
         if not required_delivery.issubset(delivery_columns):
             return False
@@ -468,8 +891,7 @@ def build_database(database_path, league, archive_path):
                 match_id TEXT PRIMARY KEY,
                 venue TEXT,
                 winner TEXT,
-                league TEXT,
-                season INTEGER
+                league TEXT
             )
             """
         )
@@ -521,33 +943,7 @@ def build_database(database_path, league, archive_path):
                     match_id = Path(filename).stem
                     venue = str(info.get("venue", "") or "")
 
-                    # Real calendar year the match was actually played, taken
-                    # directly from Cricsheet's own "dates" field. This is
-                    # used only for recency weighting later - never guessed
-                    # or backfilled, so a match with no usable date simply
-                    # gets season=NULL and is treated as recency-neutral.
-                    season_year = None
-                    match_dates = info.get("dates") or []
-                    if match_dates:
-                        try:
-                            season_year = int(str(match_dates[0])[:4])
-                        except (ValueError, TypeError):
-                            season_year = None
-
-                    if season_year is None:
-                        season_field = str(info.get("season", "") or "")
-                        digits = "".join(
-                            ch for ch in season_field if ch.isdigit()
-                        )
-                        if len(digits) >= 4:
-                            try:
-                                season_year = int(digits[:4])
-                            except ValueError:
-                                season_year = None
-
-                    match_rows.append(
-                        (match_id, venue, winner, league, season_year)
-                    )
+                    match_rows.append((match_id, venue, winner, league))
 
                     innings_list = data.get("innings", []) or []
 
@@ -599,8 +995,8 @@ def build_database(database_path, league, archive_path):
                         connection.executemany(
                             """
                             INSERT OR REPLACE INTO matches(
-                                match_id, venue, winner, league, season
-                            ) VALUES(?,?,?,?,?)
+                                match_id, venue, winner, league
+                            ) VALUES(?,?,?,?)
                             """,
                             match_rows,
                         )
@@ -627,8 +1023,8 @@ def build_database(database_path, league, archive_path):
             connection.executemany(
                 """
                 INSERT OR REPLACE INTO matches(
-                    match_id, venue, winner, league, season
-                ) VALUES(?,?,?,?,?)
+                    match_id, venue, winner, league
+                ) VALUES(?,?,?,?)
                 """,
                 match_rows,
             )
@@ -703,6 +1099,9 @@ def download_archive(url, destination):
 
 
 def ensure_database(league):
+    if league == PRO20:
+        return ensure_pro20_database()
+
     database_path = DATABASES[league]
 
     # Existing valid DB: keep it exactly as-is.
@@ -748,7 +1147,7 @@ def ensure_database(league):
 
 
 @st.cache_resource
-def get_connection(database_path_text):
+def get_connection(database_path_text, database_version=0):
     database_path = Path(database_path_text)
     migrate_database(database_path)
 
@@ -785,61 +1184,6 @@ def get_grounds(connection, league):
         (league,),
     ).fetchall()
     return [str(row[0]).strip() for row in rows if row[0]]
-
-
-def get_latest_season(connection, league):
-    """Most recent real calendar year this league has data for."""
-    row = connection.execute(
-        "SELECT MAX(season) FROM matches WHERE league=? AND season IS NOT NULL",
-        (league,),
-    ).fetchone()
-    value = row[0] if row else None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def get_current_teams(connection, league):
-    """Only the team names that actually played in this league's most
-    recently completed season - real data, not a hand-typed exclusion
-    list. This is what naturally drops defunct franchises (e.g. Deccan
-    Chargers) and always reflects a team's current name (e.g. Royal
-    Challengers Bengaluru, not the old Bangalore name) without anyone
-    having to maintain a list by hand.
-    """
-    latest_season = get_latest_season(connection, league)
-
-    if latest_season is not None:
-        rows = connection.execute(
-            """
-            SELECT DISTINCT d.batting_team
-            FROM deliveries d
-            JOIN matches m ON m.match_id=d.match_id AND m.league=d.league
-            WHERE d.league=?
-            AND d.batting_team<>''
-            AND m.season=?
-            ORDER BY d.batting_team
-            """,
-            (league, latest_season),
-        ).fetchall()
-        teams = [str(row[0]).strip() for row in rows if row[0]]
-        if teams:
-            return teams
-
-    # Fallback (e.g. season data missing for some reason): full history,
-    # same as before, rather than showing an empty team list.
-    return get_values(
-        connection,
-        """
-        SELECT DISTINCT batting_team
-        FROM deliveries
-        WHERE league=?
-        AND batting_team<>''
-        ORDER BY batting_team
-        """,
-        league,
-    )
 
 
 def score_at(connection, match_id, innings_no, end_ball):
@@ -886,33 +1230,6 @@ def match_winner(connection, match_id):
 
 
 # ============================================================
-# RECENCY WEIGHTING (2026 form counts more than 2010 form)
-# ============================================================
-#
-# Standard exponential time-decay: a match's influence halves every
-# RECENCY_HALF_LIFE_YEARS years of age relative to the league's most
-# recent available season. A match from the latest season gets full
-# weight (1.0); one 6 seasons old gets ~0.5x; 12 seasons old ~0.25x, and
-# so on. This is a real, well-known weighting technique (used the same
-# way in Elo-style rating systems) - not a made-up number - and it is
-# what lets recent scoring trends (grounds/formats getting higher-scoring
-# over time) matter more than a decade-old match with an identical score.
-
-RECENCY_HALF_LIFE_YEARS = 6.0
-
-
-def recency_weight(season, latest_season):
-    try:
-        season = int(season)
-        latest_season = int(latest_season)
-    except (TypeError, ValueError):
-        return 1.0
-
-    age = max(0, latest_season - season)
-    return 0.5 ** (age / RECENCY_HALF_LIFE_YEARS)
-
-
-# ============================================================
 # HISTORICAL MATCH MATCHING
 # ============================================================
 
@@ -927,20 +1244,12 @@ def find_similar_states(
     batting_team,
     bowling_team,
     ground="",
-    exclude_match_id="",
 ):
     """Find comparable historical live states.
 
     Ground is a similarity feature rather than a hard filter, so the model
     can fall back to wider historical evidence when the selected venue has
     too few comparable states.
-
-    exclude_match_id: if the Cricsheet archive already contains the match
-    currently being analyzed (e.g. a just-finished 2026 match used for
-    backtesting), that match's own deliveries must NOT be allowed into its
-    own historical comparison pool - otherwise the model would partially
-    "see the future" and the test would be invalid. Pass that match's
-    Cricsheet match_id here to keep the search honestly historical.
     """
     low_ball = max(0, int(current_ball) - 2)
     high_ball = min(int(end_ball), int(current_ball) + 2)
@@ -952,10 +1261,6 @@ def find_similar_states(
             AND d.ball_pos BETWEEN ? AND ?
         """
         params = [league, innings_no, low_ball, high_ball]
-
-        if exclude_match_id:
-            where_sql += " AND d.match_id<>?"
-            params.append(str(exclude_match_id).strip())
 
         if mode == "both":
             where_sql += """
@@ -974,8 +1279,7 @@ def find_similar_states(
                 d.ball_pos,
                 d.batting_team,
                 d.bowling_team,
-                COALESCE(m.venue, '') AS venue,
-                m.season AS season
+                COALESCE(m.venue, '') AS venue
             FROM deliveries d
             LEFT JOIN matches m
                 ON m.match_id=d.match_id
@@ -987,8 +1291,7 @@ def find_similar_states(
                 d.ball_pos,
                 d.batting_team,
                 d.bowling_team,
-                m.venue,
-                m.season
+                m.venue
             LIMIT 30000
         """
         return connection.execute(query, params).fetchall()
@@ -998,8 +1301,6 @@ def find_similar_states(
         candidates = fetch_candidates("batting")
     if len(candidates) < 40:
         candidates = fetch_candidates("all")
-
-    latest_season = get_latest_season(connection, league)
 
     current_ball_float = max(0.0, float(current_ball))
     current_overs = current_ball_float / 6.0
@@ -1069,7 +1370,6 @@ def find_similar_states(
             "venue": venue,
             "ground_match": ground_match,
             "distance": float(distance),
-            "recency_weight": recency_weight(row["season"], latest_season),
         }
 
         if key not in best_states or state["distance"] < best_states[key]["distance"]:
@@ -1078,94 +1378,6 @@ def find_similar_states(
     states = list(best_states.values())
     states.sort(key=lambda item: item["distance"])
     return states[:2500]
-
-
-# ============================================================
-# PAR SCORE (BASE-RATE PRIOR)
-# ============================================================
-#
-# This is the piece that answers "how does a bookie already know a
-# sensible number from ball 1?" - they are not purely reacting to the
-# live ball, they start from a strong prior: the average score teams
-# reach by this stage of the innings in this league (and at this ground),
-# built from thousands of past matches. As live, closely-matching
-# situations accumulate, the live signal is trusted more and the prior
-# fades out. That is exactly what CONFIDENCE_SAMPLES + blend_with_par
-# do below.
-
-CONFIDENCE_SAMPLES = 40.0
-
-
-def get_par_score(
-    connection,
-    league,
-    innings_no,
-    end_ball,
-    ground="",
-    exclude_match_id="",
-):
-    """Recency-weighted average score reached by end_ball across matches in
-    this league/innings (optionally the same ground), independent of the
-    current live runs/wickets/teams. A stable "par score" baseline that
-    leans toward how the game is scoring NOW rather than a flat all-time
-    average across a decade-plus of data.
-    """
-    params = [league, innings_no, int(end_ball)]
-    join_sql = "LEFT JOIN matches m ON m.match_id=d.match_id AND m.league=d.league"
-    extra_where = ""
-
-    if ground:
-        extra_where += " AND m.venue=?"
-        params.append(ground)
-
-    if exclude_match_id:
-        extra_where += " AND d.match_id<>?"
-        params.append(str(exclude_match_id).strip())
-
-    query = f"""
-        SELECT d.match_id, m.season AS season, SUM(d.runs) AS inn_score
-        FROM deliveries d
-        {join_sql}
-        WHERE d.league=?
-        AND d.innings_no=?
-        AND d.ball_pos<=?
-        {extra_where}
-        GROUP BY d.match_id, m.season
-    """
-
-    rows = connection.execute(query, params).fetchall()
-    if not rows:
-        return None
-
-    latest_season = get_latest_season(connection, league)
-
-    total_weight = 0.0
-    weighted_sum = 0.0
-    for row in rows:
-        score = row["inn_score"]
-        if score is None:
-            continue
-        weight = recency_weight(row["season"], latest_season)
-        weighted_sum += float(score) * weight
-        total_weight += weight
-
-    if total_weight <= 0:
-        return None
-
-    return weighted_sum / total_weight
-
-
-def blend_with_par(estimate, samples, par_score):
-    """Shrink a low-sample similarity estimate toward the league/ground
-    par score. With >= CONFIDENCE_SAMPLES closely-matching live states,
-    the estimate is trusted almost fully; with very few, the par score
-    dominates instead of letting a handful of noisy matches swing wildly.
-    """
-    if par_score is None:
-        return float(estimate)
-
-    confidence = min(1.0, float(samples) / CONFIDENCE_SAMPLES)
-    return (confidence * float(estimate)) + ((1.0 - confidence) * float(par_score))
 
 
 # ============================================================
@@ -1183,7 +1395,6 @@ def calculate_historical_average(
     batting_team,
     bowling_team,
     ground,
-    exclude_match_id="",
 ):
     """Calculate historical score independently of the live session line."""
     end_ball = int(session_over) * 6
@@ -1207,7 +1418,6 @@ def calculate_historical_average(
         batting_team,
         bowling_team,
         ground,
-        exclude_match_id=exclude_match_id,
     )
 
     if not states:
@@ -1238,9 +1448,7 @@ def calculate_historical_average(
 
         # Never let a historical result fall below the current live score.
         session_score = max(int(current_runs), int(session_score))
-        weight = (
-            1.0 / (1.0 + float(state["distance"]))
-        ) * float(state.get("recency_weight", 1.0))
+        weight = 1.0 / (1.0 + float(state["distance"]))
 
         values.append(session_score)
         weights.append(weight)
@@ -1255,18 +1463,6 @@ def calculate_historical_average(
 
     total_weight = sum(weights)
     weighted_average = sum(v * w for v, w in zip(values, weights)) / total_weight
-
-    par_score = get_par_score(
-        connection,
-        league,
-        innings_no,
-        end_ball,
-        ground=ground,
-        exclude_match_id=exclude_match_id,
-    )
-
-    blended_average = blend_with_par(weighted_average, len(values), par_score)
-    shift = blended_average - weighted_average
 
     # Weighted 25th/75th percentile range, with a small fallback when needed.
     paired = sorted(zip(values, weights), key=lambda x: x[0])
@@ -1285,11 +1481,11 @@ def calculate_historical_average(
             q75 = value
             break
 
-    low = max(int(current_runs), int(round(q25 + shift)))
-    high = max(low, int(round(q75 + shift)))
+    low = max(int(current_runs), int(q25))
+    high = max(low, int(q75))
 
     return {
-        "average": float(blended_average),
+        "average": float(weighted_average),
         "low": low,
         "high": high,
         "samples": len(values),
@@ -1312,7 +1508,6 @@ def calculate_auto_model(
     bowling_team,
     target,
     ground="",
-    exclude_match_id="",
 ):
     end_ball = int(session_over) * 6
 
@@ -1338,7 +1533,6 @@ def calculate_auto_model(
         batting_team,
         bowling_team,
         ground,
-        exclude_match_id=exclude_match_id,
     )
 
     if not states:
@@ -1371,15 +1565,7 @@ def calculate_auto_model(
                 state["innings_no"],
             )
 
-        # Same live-runs floor as calculate_historical_average: for the
-        # SAME team's own remaining innings, the eventual score at
-        # end_ball can never be lower than what has already been scored.
-        # Without this, a handful of unrelated historical matches with a
-        # lower session_score than the current live score were quietly
-        # pulling "expected" down and inflating the Stay-Under chance.
-        session_score = max(int(current_runs), int(session_score))
-
-        weight = (1.0 / (1.0 + float(state["distance"]))) * float(state.get("recency_weight", 1.0))
+        weight = 1.0 / (1.0 + float(state["distance"]))
         scores.append(int(session_score))
         weights.append(float(weight))
 
@@ -1401,26 +1587,15 @@ def calculate_auto_model(
 
     total_weight = sum(weights)
 
-    raw_expected = (
+    expected = (
         sum(score * weight for score, weight in zip(scores, weights)) / total_weight
         if total_weight > 0
         else float(current_runs)
     )
 
-    par_score = get_par_score(
-        connection,
-        league,
-        innings_no,
-        end_ball,
-        ground=ground,
-        exclude_match_id=exclude_match_id,
-    )
-
-    expected = blend_with_par(raw_expected, len(states), par_score)
-
-    # Keep the existing score-line output behavior: a one-run interval around
+    # Keep the existing session-line output behavior: a one-run interval around
     # the model's expected result. The independent historical range is shown
-    # separately and does not use this line.
+    # separately and does not use the session/bookie line.
     low = max(int(current_runs), int(round(expected)))
     high = low + 1
 
@@ -1468,7 +1643,6 @@ def calculate_manual_probability(
     bowling_team,
     line_high,
     ground="",
-    exclude_match_id="",
 ):
     end_ball = int(session_over) * 6
 
@@ -1483,7 +1657,6 @@ def calculate_manual_probability(
         batting_team,
         bowling_team,
         ground,
-        exclude_match_id=exclude_match_id,
     )
 
     if not states:
@@ -1507,7 +1680,7 @@ def calculate_manual_probability(
                 state["innings_no"],
             )
 
-        weight = (1.0 / (1.0 + float(state["distance"]))) * float(state.get("recency_weight", 1.0))
+        weight = 1.0 / (1.0 + float(state["distance"]))
         total_weight += weight
 
         if session_score >= int(line_high):
@@ -1536,18 +1709,17 @@ DEFAULTS = {
     "balls": 19,
     "last": "Starting situation",
     "undo_stack": [],
+    "session_over": 6,
     "target": 0,
+    "manual_mode": False,
+    "session_low": 0,
+    "session_high": 1,
+    "expected_score": 0.0,
     "win_probability": None,
     "historical_average": 0.0,
     "historical_low": 0,
     "historical_high": 0,
     "historical_samples": 0,
-    "projection_end_over": 20,
-    "score_prediction": 0,
-    "analyzed": False,
-    "analyze_cross": 0.0,
-    "analyze_under": 100.0,
-    "analyze_samples": 0,
 }
 
 for key, value in DEFAULTS.items():
@@ -1569,16 +1741,37 @@ with st.sidebar:
 
     try:
         database_path = ensure_database(league)
-        connection = get_connection(str(database_path.resolve()))
+        database_version = database_path.stat().st_mtime_ns if database_path.exists() else 0
+        connection = get_connection(str(database_path.resolve()), database_version)
     except Exception as error:
         st.error("Database start nahi ho saka.")
         st.exception(error)
         st.stop()
 
-    # Only team names from the league's most recently played season -
-    # automatically drops defunct/renamed old franchise names (e.g.
-    # Deccan Chargers) with no hand-maintained list.
-    teams = get_current_teams(connection, league)
+    if league == PRO20:
+        if st.button("Refresh CSA Pro20 Data", use_container_width=True, key="refresh_pro20_data"):
+            try:
+                database_path = ensure_pro20_database(force=True)
+                st.cache_resource.clear()
+                st.rerun()
+            except Exception as refresh_error:
+                st.error("CSA Pro20 data refresh nahi ho saka.")
+                st.exception(refresh_error)
+
+    if league == PRO20:
+        teams = PRO20_TEAMS.copy()
+    else:
+        teams = get_values(
+            connection,
+            """
+            SELECT DISTINCT batting_team
+            FROM deliveries
+            WHERE league=?
+            AND batting_team<>''
+            ORDER BY batting_team
+            """,
+            league,
+        )
 
     if not teams:
         st.error("Database me team data nahi mila.")
@@ -1619,8 +1812,29 @@ with st.sidebar:
 
     innings_no = 1 if innings_label == "1st Innings" else 2
 
-    # Match setup (League/Teams/Ground/Innings) rarely changes mid-session,
-    # so the "confirm starting situation" control sits right here.
+    session_over = st.number_input(
+        "Session Over",
+        min_value=1,
+        max_value=20,
+        value=int(st.session_state.session_over),
+        step=1,
+        key="session_over_widget",
+    )
+
+    target = st.number_input(
+        "Target Runs",
+        min_value=0,
+        max_value=400,
+        value=int(st.session_state.target),
+        step=1,
+        key="target_runs_widget",
+    )
+
+    st.session_state.session_over = int(session_over)
+    st.session_state.target = int(target)
+
+    # Start position is only the initial state. Once live buttons are used,
+    # the canonical state is st.session_state.runs/wickets/balls.
     over_points = ["0.0"]
     for over in range(20):
         for ball in range(1, 7):
@@ -1669,22 +1883,6 @@ with st.sidebar:
             st.session_state.last = "Starting situation set"
             st.rerun()
 
-    # Target Runs only makes sense once chasing, so it's hidden in the 1st
-    # innings and only shown when 2nd Innings is selected.
-    if innings_no == 2:
-        target = st.number_input(
-            "Target Runs",
-            min_value=0,
-            max_value=400,
-            value=int(st.session_state.target),
-            step=1,
-            key="target_runs_widget",
-        )
-        st.session_state.target = int(target)
-    else:
-        target = 0
-        st.session_state.target = 0
-
     if st.button(
         "Reset Live Situation",
         use_container_width=True,
@@ -1708,7 +1906,10 @@ with st.sidebar:
         "Over / Ball",
         display_over(st.session_state.balls),
     )
-    st.caption("Updates automatically after every ball/event")
+    st.caption(
+        f"Target Over: {int(st.session_state.session_over)} • "
+        "Updates after every ball/event"
+    )
 
 
 # ============================================================
@@ -1723,13 +1924,6 @@ balls = int(st.session_state.balls)
 # ============================================================
 # CURRENT MODEL
 # ============================================================
-#
-# Historical Average and Win/Loss are always computed over the FULL
-# innings (all leagues here are T20 = 20 overs), independent of whatever
-# the person types into the manual Score Prediction check below. They
-# recalculate automatically after every ball/event - no button needed.
-
-FULL_INNINGS_OVERS = 20
 
 try:
     auto_model = calculate_auto_model(
@@ -1739,7 +1933,7 @@ try:
         current_ball=balls,
         current_runs=runs,
         current_wickets=wickets,
-        session_over=FULL_INNINGS_OVERS,
+        session_over=int(session_over),
         batting_team=batting_team,
         bowling_team=bowling_team,
         target=int(target),
@@ -1753,7 +1947,7 @@ try:
         current_ball=balls,
         current_runs=runs,
         current_wickets=wickets,
-        session_over=FULL_INNINGS_OVERS,
+        session_over=int(session_over),
         batting_team=batting_team,
         bowling_team=bowling_team,
         ground=ground,
@@ -1765,7 +1959,13 @@ except Exception as error:
     st.stop()
 
 
-st.session_state.win_probability = auto_model["win_probability"]
+# Session DNA auto output follows current live state every rerun/ball.
+if not st.session_state.manual_mode:
+    st.session_state.session_low = int(auto_model["low"])
+    st.session_state.session_high = int(auto_model["high"])
+    st.session_state.expected_score = float(auto_model["expected"])
+    st.session_state.win_probability = auto_model["win_probability"]
+
 st.session_state.historical_average = float(historical_model["average"])
 st.session_state.historical_low = int(historical_model["low"])
 st.session_state.historical_high = int(historical_model["high"])
@@ -1773,24 +1973,38 @@ st.session_state.historical_samples = int(historical_model["samples"])
 
 
 # ============================================================
-# TOP SCORE
+# TOP SCORE + SESSION MODE
 # ============================================================
 
-st.html(
-    f"""
-    <div class="card">
-        <h2 style="margin:0">
-            {batting_team} {runs}/{wickets}
-        </h2>
-        <p class="small" style="margin:5px 0 0">
-            {display_over(balls)} ov
-            • Ground: {ground or "—"}
-            • Target: {target if target > 0 else "Not set"}
-            • Last: {st.session_state.last or "—"}
-        </p>
-    </div>
-    """
-)
+score_column, mode_column = st.columns([8, 2], gap="small")
+
+with score_column:
+    st.html(
+        f"""
+        <div class="card">
+            <h2 style="margin:0">
+                {batting_team} {runs}/{wickets}
+            </h2>
+            <p class="small" style="margin:5px 0 0">
+                {display_over(balls)} ov
+                • Session End: {session_over} ov
+                • Target: {target if target > 0 else "Not set"}
+                • Ground: {ground or "—"}
+                • Last: {st.session_state.last or "—"}
+            </p>
+        </div>
+        """
+    )
+
+with mode_column:
+    selected_mode = st.radio(
+        "Mode",
+        ["AUTO", "MANUAL"],
+        index=1 if st.session_state.manual_mode else 0,
+        horizontal=True,
+        key="session_mode_radio",
+    )
+    st.session_state.manual_mode = selected_mode == "MANUAL"
 
 
 # ============================================================
@@ -1850,141 +2064,200 @@ for index, (label, add_runs, add_wicket, legal_ball) in enumerate(actions):
 
 
 # ============================================================
-# SCORE PREDICTION CHECK
+# SESSION + WINNING + HISTORICAL SUMMARY
 # ============================================================
-# Runs/Over/Wkt here always mirror the live match state above (read-only,
-# automatic). Projection End Over + Score Prediction are set manually.
-# Pressing Analyze evaluates the manually chosen over/score line against
-# whatever the REAL live situation is at that moment.
 
-st.subheader("Score Prediction Check")
-
-check_col1, check_col2, check_col3, check_col4, check_col5 = st.columns(
-    5, gap="small"
+session_column, historical_column, winning_column = st.columns(
+    3,
+    gap="small",
 )
 
-with check_col1:
-    st.metric("Runs", runs)
-
-with check_col2:
-    st.metric("Over", display_over(balls))
-
-with check_col3:
-    st.metric("Wkt", wickets)
-
-with check_col4:
-    default_end_over = int(st.session_state.projection_end_over)
-    projection_end_over = st.number_input(
-        "Projection End Over",
-        min_value=1,
-        max_value=20,
-        value=default_end_over,
-        step=1,
-        key="projection_end_over_widget",
+with session_column:
+    st.html(
+        f"""
+        <div class="session-box">
+            <h3 style="margin:0">Session DNA</h3>
+            <h1 style="margin:8px 0">
+                {int(st.session_state.session_low)}
+                -
+                {int(st.session_state.session_high)}
+            </h1>
+            <p class="small">
+                Expected: {float(st.session_state.expected_score):.1f}
+                • End: {session_over} ov
+            </p>
+            <p class="small">
+                Current Line is separate from historical memory.
+            </p>
+        </div>
+        """
     )
 
-with check_col5:
-    default_prediction = int(st.session_state.score_prediction)
-    if default_prediction <= 0:
-        default_prediction = runs + 10
-    score_prediction = st.number_input(
-        "Score Prediction",
+with historical_column:
+    st.html(
+        f"""
+        <div class="historical-box">
+            <h3 style="margin:0">Historical Situation</h3>
+            <h1 style="margin:8px 0">
+                {float(st.session_state.historical_average):.1f}
+            </h1>
+            <p class="small">
+                Historical Avg Score
+            </p>
+            <p class="small">
+                Range: <b>
+                {int(st.session_state.historical_low)}
+                -
+                {int(st.session_state.historical_high)}
+                </b>
+            </p>
+            <p class="small">
+                Comparable samples: {int(st.session_state.historical_samples)}
+            </p>
+        </div>
+        """
+    )
+
+with winning_column:
+    probability = st.session_state.win_probability
+    probability_text = f"{float(probability):.1f}%" if probability is not None else "—"
+
+    st.html(
+        f"""
+        <div class="winning-box">
+            <h3 style="margin:0">
+                {batting_team} Win
+            </h3>
+            <h1 style="margin:8px 0">
+                {probability_text}
+            </h1>
+            <p class="small">
+                Current live situation + historical context
+            </p>
+        </div>
+        """
+    )
+
+
+# ============================================================
+# MANUAL SESSION CONTROLS
+# ============================================================
+
+manual_low_column, manual_high_column = st.columns(2, gap="small")
+
+with manual_low_column:
+    manual_low = st.number_input(
+        "Manual Session Low",
         min_value=0,
         max_value=400,
-        value=default_prediction,
+        value=int(st.session_state.session_low),
         step=1,
-        key="score_prediction_widget",
+        key="manual_low_widget",
     )
 
-st.session_state.projection_end_over = int(projection_end_over)
-st.session_state.score_prediction = int(score_prediction)
+with manual_high_column:
+    manual_high = st.number_input(
+        "Manual Session High",
+        min_value=0,
+        max_value=400,
+        value=int(st.session_state.session_high),
+        step=1,
+        key="manual_high_widget",
+    )
 
-if st.button("Analyze", use_container_width=True, key="analyze_button"):
+manual_button, auto_button = st.columns(2, gap="small")
+
+with manual_button:
+    if st.button(
+        "Apply Manual Session",
+        use_container_width=True,
+        key="apply_manual_session_button",
+    ):
+        st.session_state.manual_mode = True
+        st.session_state.session_low = int(manual_low)
+        st.session_state.session_high = max(int(manual_low) + 1, int(manual_high))
+        st.rerun()
+
+with auto_button:
+    if st.button(
+        "Use Auto Session",
+        use_container_width=True,
+        key="use_auto_session_button",
+    ):
+        st.session_state.manual_mode = False
+        st.rerun()
+
+
+# ============================================================
+# FINAL SESSION RESULT
+# ============================================================
+
+if st.session_state.manual_mode:
     try:
-        analyze_result = calculate_manual_probability(
+        manual_result = calculate_manual_probability(
             connection=connection,
             league=league,
             innings_no=innings_no,
-            current_ball=int(st.session_state.balls),
-            current_runs=int(st.session_state.runs),
-            current_wickets=int(st.session_state.wickets),
-            session_over=int(st.session_state.projection_end_over),
+            current_ball=balls,
+            current_runs=runs,
+            current_wickets=wickets,
+            session_over=int(session_over),
             batting_team=batting_team,
             bowling_team=bowling_team,
-            line_high=int(st.session_state.score_prediction),
+            line_high=int(st.session_state.session_high),
             ground=ground,
         )
 
-        st.session_state.analyze_cross = float(analyze_result["yes"])
-        st.session_state.analyze_under = float(analyze_result["no"])
-        st.session_state.analyze_samples = int(analyze_result["samples"])
-        st.session_state.analyzed = True
+        session_yes = float(manual_result["yes"])
+        session_no = float(manual_result["no"])
+        session_samples = int(manual_result["samples"])
 
     except Exception as error:
-        st.error("Analyze calculation failed.")
+        st.error("Manual session calculation failed.")
         st.exception(error)
+        session_yes = 0.0
+        session_no = 100.0
+        session_samples = 0
 
-
-# ============================================================
-# VASUDEV PREDICTION
-# ============================================================
-
-confidence_label = (
-    "High"
-    if int(st.session_state.historical_samples) >= 150
-    else "Medium"
-    if int(st.session_state.historical_samples) >= 40
-    else "Low"
-)
-
-st.subheader("VasuDev Prediction")
-
-if st.session_state.analyzed:
-    cross = float(st.session_state.analyze_cross)
-    under = float(st.session_state.analyze_under)
-    result_class = "positive" if cross >= under else "negative"
-    check_html = f"""
-        <h1 style="margin:0">
-            Score Prediction: {int(st.session_state.score_prediction)}
-            by Over {int(st.session_state.projection_end_over)}
-        </h1>
-        <p style="margin:8px 0 0">
-            Cross Chance: <b>{cross:.1f}%</b>
-            •
-            Stay-Under Chance: <b>{under:.1f}%</b>
-        </p>
-        <p class="small" style="margin:5px 0 0">
-            Based on {int(st.session_state.analyze_samples)} similar historical situations
-        </p>
-    """
 else:
-    result_class = "projection-box"
-    check_html = """
-        <h3 style="margin:0">Score Prediction Check</h3>
-        <p class="small" style="margin:8px 0 0">
-            Over aur Score set karke "Analyze" dabayein.
-        </p>
-    """
+    session_yes = float(auto_model["session_yes"])
+    session_no = float(auto_model["session_no"])
+    session_samples = int(auto_model["samples"])
+
+
+result_label = "YES" if session_yes >= session_no else "NO"
+result_class = "yes" if result_label == "YES" else "no"
+result_percent = max(session_yes, session_no)
+
+st.subheader("VasuDev Result")
 
 st.html(
     f"""
     <div class="{result_class}">
-        {check_html}
-        <div style="margin-top:12px; padding-top:12px; border-top:1px solid #4777a8;">
-            <p style="margin:0 0 6px">
-                Historical Average:
-                <b>{float(st.session_state.historical_average):.1f}</b>
-            </p>
-            <p style="margin:5px 0">
-                Historical Range:
-                <b>{int(st.session_state.historical_low)} - {int(st.session_state.historical_high)}</b>
-            </p>
-            <p style="margin:5px 0 0">
-                Similar Historical Samples:
-                <b>{int(st.session_state.historical_samples)}</b>
-                • Confidence: <b>{confidence_label}</b>
-            </p>
-        </div>
+        <h1 style="margin:0">
+            SESSION {result_label}
+            — {result_percent:.1f}%
+        </h1>
+        <p style="margin:8px 0 0">
+            Session Line:
+            <b>
+                {int(st.session_state.session_low)}
+                -
+                {int(st.session_state.session_high)}
+            </b>
+        </p>
+        <p style="margin:5px 0 0">
+            Historical Avg:
+            <b>{float(st.session_state.historical_average):.1f}</b>
+            • Historical Range:
+            <b>
+                {int(st.session_state.historical_low)}-
+                {int(st.session_state.historical_high)}
+            </b>
+        </p>
+        <p style="margin:5px 0 0">
+            Similar Matches: <b>{session_samples}</b>
+        </p>
     </div>
     """
 )
@@ -2003,11 +2276,11 @@ if final_win_probability is not None:
     if batting_win >= bowling_win:
         winner_name = batting_team
         winner_percent = batting_win
-        winner_class = "positive"
+        winner_class = "yes"
     else:
         winner_name = bowling_team
         winner_percent = bowling_win
-        winner_class = "negative"
+        winner_class = "no"
 
     st.html(
         f"""
@@ -2036,6 +2309,38 @@ else:
 
 
 # ============================================================
+# CSA PRO20 DATA SUMMARY
+# ============================================================
+if league == PRO20:
+    try:
+        pro20_match_count = connection.execute(
+            "SELECT COUNT(*) FROM matches WHERE league=?", (PRO20,)
+        ).fetchone()[0]
+        pro20_delivery_count = connection.execute(
+            "SELECT COUNT(*) FROM deliveries WHERE league=?", (PRO20,)
+        ).fetchone()[0]
+        pro20_player_count = connection.execute(
+            "SELECT COUNT(DISTINCT player) FROM pro20_players"
+        ).fetchone()[0]
+        pro20_toss_count = connection.execute(
+            "SELECT COUNT(*) FROM pro20_match_meta WHERE toss_winner<>''"
+        ).fetchone()[0]
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Pro20 Matches", f"{pro20_match_count:,}")
+        c2.metric("Ball Records", f"{pro20_delivery_count:,}")
+        c3.metric("Players", f"{pro20_player_count:,}")
+        c4.metric("Toss Records", f"{pro20_toss_count:,}")
+
+        st.caption(
+            "CSA Pro20 uses a separate South Africa-only T20 database. "
+            "The 16 current Pro20 teams are kept in the selector even when a team has limited historical coverage. "
+            "Cricsheet's JSON format includes players and toss metadata as part of match information."
+        )
+    except Exception:
+        pass
+
+# ============================================================
 # DETAILS
 # ============================================================
 
@@ -2047,30 +2352,31 @@ with st.expander("Match & Analysis Details", expanded=False):
     )
     st.write(f"**Innings:** {innings_label}")
     st.write(f"**Ground / Venue:** {ground or '—'}")
+    st.write(f"**Session End:** {session_over} overs")
     st.write(
-        f"**Historical Average (full innings):** "
+        f"**Session Line:** {int(st.session_state.session_low)} - "
+        f"{int(st.session_state.session_high)}"
+    )
+    st.write(
+        f"**Expected Session Score:** "
+        f"{float(st.session_state.expected_score):.1f}"
+    )
+    st.write(
+        f"**Historical Situation Average:** "
         f"{float(st.session_state.historical_average):.1f}"
     )
     st.write(
-        f"**Historical Range:** "
+        f"**Historical Situation Range:** "
         f"{int(st.session_state.historical_low)} - "
         f"{int(st.session_state.historical_high)}"
     )
     st.write(
         f"**Historical Comparable Samples:** "
-        f"{int(st.session_state.historical_samples)} "
-        f"(Confidence: {confidence_label})"
+        f"{int(st.session_state.historical_samples)}"
     )
-
-    if st.session_state.analyzed:
-        st.write(
-            f"**Score Prediction Check:** "
-            f"{int(st.session_state.score_prediction)} by over "
-            f"{int(st.session_state.projection_end_over)}"
-        )
-        st.write(f"**Cross Chance:** {float(st.session_state.analyze_cross):.1f}%")
-        st.write(f"**Stay-Under Chance:** {float(st.session_state.analyze_under):.1f}%")
-        st.write(f"**Similar Historical Matches:** {int(st.session_state.analyze_samples)}")
+    st.write(f"**Session YES:** {session_yes:.1f}%")
+    st.write(f"**Session NO:** {session_no:.1f}%")
+    st.write(f"**Similar Historical Matches:** {session_samples}")
 
     if final_win_probability is not None:
         st.write(
@@ -2087,8 +2393,7 @@ with st.expander("Match & Analysis Details", expanded=False):
 
     st.write(
         "**Similarity Context:** Over/Ball + Runs + Wickets + Run Rate + "
-        "Batting Team + Bowling Team + Ground + Innings + Recency (recent "
-        "seasons weighted more than older ones)"
+        "Batting Team + Bowling Team + Ground + Innings"
     )
 
 
