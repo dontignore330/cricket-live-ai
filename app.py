@@ -1,41 +1,49 @@
-# VasuDev Cricket AI - "FINEST" app.py
+# VasuDev Cricket AI - "SMART" app.py
 #
-# Everything from the previous fixed version, PLUS:
+# Changes in THIS version (see chat for full explanation):
 #
-#   1. PLAYER-LEVEL FORM (new): tracks each ball's batter/bowler and the
-#      batter actually dismissed, so a specific striker's Strike Rate /
-#      Average and a specific bowler's Economy (within this league's
-#      dataset) can be computed and blended into the projection as a
-#      bounded, confidence-scaled nudge - never overriding the historical
-#      team-level model, only adjusting it.
-#      LIMITATIONS (being upfront): bowler economy counts all runs
-#      conceded off that ball, including extras, which is standard but
-#      slightly generous to spinners bowled with fewer wides; "wickets"
-#      counts any dismissal on that bowler's delivery, which very rarely
-#      over-counts run-outs (Cricsheet's dismissal *type* isn't stored
-#      here). Good enough for a form signal, not a scorecard.
-#   2. PHASE-SPECIFIC MODELING (new): Powerplay (overs 1-6), Middle
-#      (7-15) and Death (16-20) each get their own historical par run
-#      rate for this league/innings, used to shape the score trajectory
-#      realistically instead of a flat straight-line projection.
-#   3. SCORE TRAJECTORY CHART (new): an over-by-over line chart showing
-#      where your match is projected to land vs the league's average
-#      scoring pace, built from the phase par rates above and anchored
-#      to the model's actual projected total (not just a rough sketch).
-#   4. Everything from the previous fix stays: window-scoped Score
-#      Target Analysis (never mixed with full-innings numbers), toss as
-#      a similarity factor, neutral terminology (no "cross/stay-under"
-#      betting-style wording), auto-recalculation on every ball, Current
-#      Run Rate / Required Run Rate / Momentum, Head-to-Head record,
-#      and generic support for all 4 leagues (IPL, BBL, WBBL, CSA Pro
-#      T20 Cup).
+#   1. NEW LEAGUE: Abu Dhabi T10 League (10-over format). Cricsheet has no
+#      single competition zip for this league, so - exactly like CSA Pro
+#      T20 Cup - it's built by merging each known team's own archive.
+#      T10 franchises rebrand/fold often (e.g. Delhi Bulls -> UAE Bulls),
+#      so a broad list of past + current team names is used; whichever
+#      ones Cricsheet doesn't have simply get skipped with a warning
+#      (same graceful handling already used for CSA Pro T20 Cup).
+#      The whole model is now FORMAT-AWARE: overs-per-innings and the
+#      Powerplay/Middle/Death phase boundaries scale to the league
+#      (20 overs for the T20 leagues, 10 overs for T10), instead of a
+#      hardcoded 20.
 #
-# NOTE ON DATABASE REBUILD: this version adds new columns (batter,
-# bowler, batter_runs, player_out) to the deliveries table. Any database
-# built by an earlier version of this app will fail validation and be
-# automatically rebuilt (re-downloaded from Cricsheet) ONE TIME the next
-# time each league is opened. This is expected and by design - no action
-# needed.
+#   2. DECLUTTERED UI: the score used to show in 3 places (sidebar +
+#      header + a Runs/Over/Wkt metric row) - now it's just the header.
+#      Everything that isn't "update the score" or "see the two result
+#      boxes" (Match Context, Head-to-Head, Player Form, the trajectory
+#      chart, and the detailed breakdown) is tucked into a single
+#      collapsed "More Insights & Details" expander at the bottom, so the
+#      default page is: header, ball buttons, two compact prediction
+#      inputs, then the two result boxes - no scrolling needed for the
+#      core loop.
+#
+#   3. TWO BATSMEN, AUTO STRIKE ROTATION: instead of one "Current
+#      Striker" dropdown you had to keep re-picking by hand, you now set
+#      Batsman 1 and Batsman 2 once. The app tracks who's on strike and
+#      swaps automatically on odd runs and at the end of every over -
+#      exactly like real cricket - so the player-form nudge always uses
+#      whoever is actually facing. A "Wicket" ball prompts a one-tap
+#      replacement for the batsman who's out.
+#
+#   4. PITCH CONDITION (new, manual): a sidebar dropdown of common pitch
+#      behaviours (flat/batting paradise, seam-friendly, spin-friendly,
+#      slow & low, etc). Cricsheet doesn't record pitch type, so this is
+#      YOUR own read of the surface, applied as a bounded nudge exactly
+#      like the player-form nudge - it doesn't come from historical
+#      matching, since no such data exists to match against.
+#
+#   Everything from the previous version stays: window-scoped Score
+#   Target Analysis (never mixed with full-innings numbers), toss as a
+#   similarity factor, neutral terminology, auto-recalculation on every
+#   ball, Current Run Rate / Required Run Rate / Momentum, Head-to-Head,
+#   and player Strike Rate / Economy form.
 
 import hmac
 import json
@@ -133,7 +141,7 @@ st.html(
         border-radius: 16px;
         padding: 16px;
         text-align: center;
-        min-height: 235px;
+        min-height: 200px;
     }
 
     .winning-box {
@@ -142,7 +150,7 @@ st.html(
 
     .historical-box {
         border-color: #2e9c8f;
-        min-height: 210px;
+        min-height: 190px;
     }
 
     .positive {
@@ -213,7 +221,6 @@ st.html(
 # ============================================================
 
 def fmt_int(value):
-    """Thousands-separated integer for display, e.g. 1550 -> '1,550'."""
     try:
         return f"{int(value):,}"
     except Exception:
@@ -244,8 +251,14 @@ PERSISTED_KEYS = [
     "persisted_innings_label",
     "persisted_toss_winner",
     "persisted_toss_decision",
-    "persisted_striker",
+    "persisted_batsman_a",
+    "persisted_batsman_b",
     "persisted_current_bowler",
+    "persisted_pitch_condition",
+    "on_strike_index",
+    "dismissed_batsmen",
+    "awaiting_new_batsman",
+    "out_slot_index",
 ]
 
 
@@ -347,6 +360,35 @@ CSA_PRO_T20_TEAMS = [
     "Garden Route Badgers",
 ]
 
+# Abu Dhabi T10 League: franchises rebrand/fold almost every season (e.g.
+# Delhi Bulls -> UAE Bulls for 2026), so this list spans several seasons'
+# worth of team names to gather as much historical data as possible.
+# get_current_teams() already filters the SIDEBAR dropdown down to only
+# whichever of these actually played in the most recent season(s), so an
+# old defunct name never shows up as a selectable team even though its
+# historical matches still count as data. Any name Cricsheet doesn't have
+# an archive for is skipped automatically with a warning - it does not
+# break the rest of the league.
+ABU_DHABI_T10_TEAMS = [
+    "Delhi Bulls",
+    "UAE Bulls",
+    "Deccan Gladiators",
+    "Northern Warriors",
+    "Team Abu Dhabi",
+    "Qalandars",
+    "Bangla Tigers",
+    "Karnataka Tuskers",
+    "Maratha Arabians",
+    "Chennai Braves",
+    "New York Strikers",
+    "Ajman Titans",
+    "Vista Riders",
+    "Royal Champs",
+    "Aspin Stallions",
+    "Quetta Qavalry",
+    "Quetta Cavalry",
+]
+
 
 def team_slug(name):
     slug = re.sub(r"[^a-z0-9]+", "_", name.lower().strip())
@@ -358,6 +400,7 @@ DATABASES = {
     "Men's Big Bash League": BASE / "bbl_history.db",
     "Women's Big Bash League": BASE / "wbbl_history.db",
     "CSA Pro T20 Cup": BASE / "csa_pro_t20_history.db",
+    "Abu Dhabi T10 League": BASE / "t10_history.db",
 }
 
 DOWNLOAD_URLS = {
@@ -368,13 +411,42 @@ DOWNLOAD_URLS = {
         f"https://cricsheet.org/downloads/{team_slug(team)}_male_json.zip"
         for team in CSA_PRO_T20_TEAMS
     ],
+    "Abu Dhabi T10 League": [
+        f"https://cricsheet.org/downloads/{team_slug(team)}_male_json.zip"
+        for team in ABU_DHABI_T10_TEAMS
+    ],
 }
 
 RESTRICT_TEAMS = {
     "CSA Pro T20 Cup": {team.strip().lower() for team in CSA_PRO_T20_TEAMS},
+    "Abu Dhabi T10 League": {team.strip().lower() for team in ABU_DHABI_T10_TEAMS},
+}
+
+# Format-aware: overs per innings for each league. Everything downstream
+# (phase boundaries, Required Run Rate, the Start Over dropdown, the
+# Projection End Over cap) reads THIS instead of a hardcoded 20.
+LEAGUE_FORMAT_OVERS = {
+    "IPL": 20,
+    "Men's Big Bash League": 20,
+    "Women's Big Bash League": 20,
+    "CSA Pro T20 Cup": 20,
+    "Abu Dhabi T10 League": 10,
 }
 
 LEAGUES = list(DATABASES.keys())
+
+# Manual pitch-behaviour nudge (Cricsheet has no pitch-type data, so this
+# is the person's own read of the surface, not a historical match).
+PITCH_CONDITIONS = {
+    "Not Selected / Unknown": 1.00,
+    "Batting Paradise (very flat, high-scoring)": 1.12,
+    "Good for Batting (flat, true bounce)": 1.06,
+    "Balanced (even contest)": 1.00,
+    "Slow & Low (hard to score freely)": 0.92,
+    "Seam-Friendly / Green Top (helps fast bowlers)": 0.90,
+    "Spin-Friendly / Dry & Turning (helps spinners)": 0.90,
+    "Two-Paced / Tricky (inconsistent bounce)": 0.88,
+}
 
 
 # ============================================================
@@ -439,13 +511,6 @@ def get_table_columns(connection, table_name):
 
 
 def database_is_valid(database_path, league):
-    """Validate that an existing DB is actually usable.
-
-    NOTE: toss_winner/toss_decision (matches) and batter/bowler/
-    batter_runs/player_out (deliveries) were added in this version. Any
-    database built before this fix is treated as invalid ONCE, which
-    automatically triggers a clean rebuild - no manual migration needed.
-    """
     if not database_path.exists() or database_path.stat().st_size == 0:
         return False
 
@@ -1104,8 +1169,6 @@ def match_winner(connection, match_id):
 
 
 def get_head_to_head(connection, league, team_a, team_b):
-    """All-time head-to-head record between two teams in this league,
-    based on 1st-innings batting/bowling pairing (each match counted once)."""
     rows = connection.execute(
         """
         SELECT DISTINCT d.match_id, m.winner
@@ -1129,10 +1192,6 @@ def get_head_to_head(connection, league, team_a, team_b):
 
 
 def compute_recent_run_rate(undo_stack, current_runs, current_balls, window_balls=12):
-    """Run rate over the last `window_balls` legal balls of THIS live match
-    (default: last 2 overs), used as a momentum/form indicator. Returns None
-    when there isn't yet enough recorded history since 'Set Current Match
-    Situation' was last pressed (undo_stack only tracks from that point)."""
     if current_balls <= 0 or not undo_stack:
         return None
 
@@ -1158,12 +1217,10 @@ def compute_recent_run_rate(undo_stack, current_runs, current_balls, window_ball
 
 
 # ============================================================
-# DATABASE QUERIES - PLAYER LEVEL (new)
+# DATABASE QUERIES - PLAYER LEVEL
 # ============================================================
 
 def get_team_roster(connection, league, team, role):
-    """Distinct batter/bowler names for a team, preferring the most recent
-    season(s) so an old, no-longer-playing name doesn't clutter the list."""
     if not team:
         return []
 
@@ -1205,8 +1262,6 @@ def get_team_roster(connection, league, team, role):
 
 
 def get_batter_stats(connection, league, batter_name):
-    """Career (within this league's dataset) Strike Rate and Average for
-    one named batter. Returns None if no data is found for that name."""
     if not batter_name:
         return None
 
@@ -1241,9 +1296,6 @@ def get_batter_stats(connection, league, batter_name):
 
 
 def get_bowler_stats(connection, league, bowler_name):
-    """Career (within this league's dataset) Economy for one named bowler.
-    See the LIMITATIONS note at the top of this file about wickets/extras
-    approximation. Returns None if no data is found for that name."""
     if not bowler_name:
         return None
 
@@ -1277,9 +1329,6 @@ def get_bowler_stats(connection, league, bowler_name):
 
 @st.cache_data(show_spinner=False)
 def get_league_batting_benchmark(_connection, league):
-    """League-wide average strike rate, used to normalize an individual
-    batter's form. Cached since this is a full-table aggregate that only
-    changes when the database is rebuilt, not every ball."""
     row = _connection.execute(
         "SELECT COALESCE(SUM(batter_runs),0) AS runs, COUNT(*) AS balls "
         "FROM deliveries WHERE league=?",
@@ -1293,8 +1342,6 @@ def get_league_batting_benchmark(_connection, league):
 
 @st.cache_data(show_spinner=False)
 def get_league_bowling_benchmark(_connection, league):
-    """League-wide average economy rate, used to normalize an individual
-    bowler's form."""
     row = _connection.execute(
         "SELECT COALESCE(SUM(runs),0) AS runs, COUNT(*) AS balls "
         "FROM deliveries WHERE league=?",
@@ -1307,15 +1354,15 @@ def get_league_bowling_benchmark(_connection, league):
 
 
 @st.cache_data(show_spinner=False)
-def get_phase_par_rates(_connection, league, innings_no):
-    """Historical average run rate (runs per over) for Powerplay
-    (overs 1-6), Middle (7-15) and Death (16-20) overs, for this league
-    and innings. Used to shape the score trajectory chart realistically."""
+def get_phase_par_rates(_connection, league, innings_no, powerplay_end, death_start):
+    """Historical average run rate for Powerplay / Middle / Death overs,
+    with the phase boundaries themselves passed in (format-aware: a
+    10-over T10 innings and a 20-over T20 innings split differently)."""
     rows = _connection.execute(
-        """
+        f"""
         SELECT
-            CASE WHEN over_no < 6 THEN 'powerplay'
-                 WHEN over_no < 15 THEN 'middle'
+            CASE WHEN over_no < {int(powerplay_end)} THEN 'powerplay'
+                 WHEN over_no < {int(death_start)} THEN 'middle'
                  ELSE 'death' END AS phase,
             SUM(runs) AS total_runs,
             COUNT(*) AS balls
@@ -1334,20 +1381,26 @@ def get_phase_par_rates(_connection, league, innings_no):
     return rates
 
 
-def phase_rate_for_over(phase_rates, over_index):
-    if over_index < 6:
+def get_phase_boundaries(total_overs):
+    """Powerplay ends / Death starts, scaled to the league's format.
+    For 20 overs this reproduces the familiar 6 / 15 boundary; for 10
+    overs (T10) it gives 3 / 8."""
+    total_overs = max(1, int(total_overs))
+    powerplay_end = max(1, round(total_overs * 0.30))
+    death_start = max(powerplay_end + 1, round(total_overs * 0.75))
+    death_start = min(death_start, total_overs)
+    return powerplay_end, death_start
+
+
+def phase_rate_for_over(phase_rates, over_index, powerplay_end, death_start):
+    if over_index < powerplay_end:
         return phase_rates["powerplay"]
-    if over_index < 15:
+    if over_index < death_start:
         return phase_rates["middle"]
     return phase_rates["death"]
 
 
-def build_match_trajectory(current_ball, current_runs, window_end_over, target_total, phase_rates):
-    """Over-by-over cumulative projection from the CURRENT point to
-    window_end_over, landing exactly at target_total (the model's real
-    projected score), shaped by phase par rates so the climb looks like a
-    real innings (slower in the middle overs, faster at the death) instead
-    of a flat straight line."""
+def build_match_trajectory(current_ball, current_runs, window_end_over, target_total, phase_rates, powerplay_end, death_start):
     start_over_point = round(current_ball / 6.0, 2)
     current_over_completed = current_ball // 6
     remaining_overs = list(range(int(current_over_completed) + 1, int(window_end_over) + 1))
@@ -1357,7 +1410,10 @@ def build_match_trajectory(current_ball, current_runs, window_end_over, target_t
     if not remaining_overs:
         return trajectory
 
-    weights = [phase_rate_for_over(phase_rates, o - 1) for o in remaining_overs]
+    weights = [
+        phase_rate_for_over(phase_rates, o - 1, powerplay_end, death_start)
+        for o in remaining_overs
+    ]
     total_weight = sum(weights) or 1.0
     remaining_runs = max(0.0, float(target_total) - float(current_runs))
 
@@ -1369,31 +1425,16 @@ def build_match_trajectory(current_ball, current_runs, window_end_over, target_t
     return trajectory
 
 
-def build_par_trajectory(window_end_over, phase_rates):
-    """League-average pace, from ball 0, ignoring the current match -
-    a comparison line for the chart ('how a typical innings scores here')."""
+def build_par_trajectory(window_end_over, phase_rates, powerplay_end, death_start):
     trajectory = {0.0: 0.0}
     cumulative = 0.0
     for over_index in range(1, int(window_end_over) + 1):
-        cumulative += phase_rate_for_over(phase_rates, over_index - 1)
+        cumulative += phase_rate_for_over(phase_rates, over_index - 1, powerplay_end, death_start)
         trajectory[float(over_index)] = cumulative
     return trajectory
 
 
 def compute_player_adjustment(batter_stats, bowler_stats, league_batting_benchmark, league_bowling_benchmark):
-    """Bounded, confidence-scaled nudge to the projection based on the
-    selected striker's Strike Rate and/or bowler's Economy relative to the
-    league average. Returns (adjustment_ratio, confidence):
-      - adjustment_ratio multiplies the REMAINING (not-yet-scored) runs in
-        a projection. 1.0 = no change.
-      - confidence (0 to 1) reflects how much real data backs the factor;
-        with very few balls faced/bowled, the ratio is pulled back toward
-        1.0 so a tiny sample can't swing the whole projection.
-    The ratio itself is hard-capped so even a huge, well-established
-    sample can only move a projection by up to ~15% either way - this is
-    a nudge on top of the historical team-level model, not a replacement
-    for it.
-    """
     batter_factor = 1.0
     bowler_factor = 1.0
     batter_confidence = 0.0
@@ -1419,10 +1460,7 @@ def compute_player_adjustment(batter_stats, bowler_stats, league_batting_benchma
     return adjustment_ratio, combined_confidence
 
 
-def apply_player_adjustment_to_average(current_runs, base_average, base_low, base_high, adjustment_ratio):
-    """Shift an average/low/high triple by scaling the REMAINING (not
-    already-scored) portion by adjustment_ratio, then sliding low/high by
-    the same amount so the range keeps its original shape."""
+def apply_adjustment_to_average(current_runs, base_average, base_low, base_high, adjustment_ratio):
     delta = float(base_average) - float(current_runs)
     adjusted_average = float(current_runs) + delta * adjustment_ratio
     shift = adjusted_average - float(base_average)
@@ -1434,7 +1472,7 @@ def apply_player_adjustment_to_average(current_runs, base_average, base_low, bas
 
 
 # ============================================================
-# RECENCY WEIGHTING (2026 form counts more than 2010 form)
+# RECENCY WEIGHTING
 # ============================================================
 
 RECENCY_HALF_LIFE_YEARS = 6.0
@@ -1470,13 +1508,6 @@ def find_similar_states(
     current_toss_role=None,
     current_toss_decision=None,
 ):
-    """Find comparable historical live states.
-
-    current_toss_role: "batting" if the CURRENT batting team won the toss,
-        "bowling" if the current bowling team won it, or None if unknown.
-    current_toss_decision: "bat" or "field", or None if unknown. Both are
-        soft similarity features (like ground), never hard filters.
-    """
     low_ball = max(0, int(current_ball) - 2)
     high_ball = min(int(end_ball), int(current_ball) + 2)
 
@@ -1839,7 +1870,7 @@ def calculate_historical_average(
 
 
 # ============================================================
-# FULL-MATCH MODEL (always 20 overs - used for the match-winner box)
+# FULL-MATCH MODEL (whole innings for THIS league's format)
 # ============================================================
 
 def calculate_auto_model(
@@ -2009,11 +2040,6 @@ def calculate_manual_probability(
     current_toss_role=None,
     current_toss_decision=None,
 ):
-    """Probability of reaching / falling short of a chosen score line, for
-    matches at the SAME window (session_over). This stays a pure
-    historical-frequency estimate (no player-form nudge applied here) to
-    keep the probability statistically honest and easy to reason about;
-    the player-form nudge is applied to the AVERAGE/RANGE displays instead."""
     end_ball = int(session_over) * 6
 
     states = find_similar_states(
@@ -2101,6 +2127,10 @@ DEFAULTS = {
     "window_cross_chance": 0.0,
     "window_stay_chance": 100.0,
     "window_samples": 0,
+    "on_strike_index": 0,
+    "dismissed_batsmen": [],
+    "awaiting_new_batsman": False,
+    "out_slot_index": None,
 }
 
 for key, value in DEFAULTS.items():
@@ -2133,6 +2163,8 @@ with st.sidebar:
         key="league_select",
     )
     st.session_state["persisted_league"] = league
+
+    FULL_INNINGS_OVERS = LEAGUE_FORMAT_OVERS.get(league, 20)
 
     try:
         database_path = ensure_database(league)
@@ -2221,22 +2253,57 @@ with st.sidebar:
         current_toss_decision = None
 
     st.markdown("---")
-    st.subheader("Player Context (optional)")
+    st.subheader("Pitch Condition (manual, optional)")
     st.caption(
-        "Adds a small, bounded form-based nudge using this player's history "
-        "in this league. Leave as 'Not Selected' to use team-only data."
+        "Cricsheet has no pitch-type data, so this is YOUR read of the "
+        "surface, applied as a bounded nudge - not a historical match."
+    )
+    pitch_options = list(PITCH_CONDITIONS.keys())
+    pitch_choice = st.selectbox(
+        "Pitch Behaviour",
+        pitch_options,
+        index=restored_index(pitch_options, "persisted_pitch_condition"),
+        key="pitch_condition_select",
+    )
+    st.session_state["persisted_pitch_condition"] = pitch_choice
+    pitch_adjustment_ratio = PITCH_CONDITIONS[pitch_choice]
+
+    st.markdown("---")
+    st.subheader("Batsmen & Bowler (optional)")
+    st.caption(
+        "Set both batsmen once - strike rotates automatically on odd runs "
+        "and at the end of each over, so you don't need to keep re-picking."
     )
 
-    striker_roster = ["Not Selected"] + get_team_roster(
-        connection, league, batting_team, "batting"
+    batting_roster = get_team_roster(connection, league, batting_team, "batting")
+    batsman_options = ["Not Selected"] + batting_roster
+
+    batsman_a_choice = st.selectbox(
+        "Batsman 1",
+        batsman_options,
+        index=restored_index(batsman_options, "persisted_batsman_a"),
+        key="batsman_a_select",
     )
-    striker_choice = st.selectbox(
-        "Current Striker",
-        striker_roster,
-        index=restored_index(striker_roster, "persisted_striker"),
-        key="striker_select",
+    st.session_state["persisted_batsman_a"] = batsman_a_choice
+
+    batsman_b_choice = st.selectbox(
+        "Batsman 2",
+        batsman_options,
+        index=restored_index(batsman_options, "persisted_batsman_b"),
+        key="batsman_b_select",
     )
-    st.session_state["persisted_striker"] = striker_choice
+    st.session_state["persisted_batsman_b"] = batsman_b_choice
+
+    on_strike_index = int(st.session_state.get("on_strike_index", 0))
+    on_strike_name = batsman_a_choice if on_strike_index == 0 else batsman_b_choice
+
+    st.caption(
+        f"Currently facing: **{on_strike_name if on_strike_name != 'Not Selected' else '—'}**"
+    )
+
+    if st.button("Swap Strike Manually", use_container_width=True, key="swap_strike_button"):
+        st.session_state.on_strike_index = 1 - on_strike_index
+        st.rerun()
 
     bowler_roster = ["Not Selected"] + get_team_roster(
         connection, league, bowling_team, "bowling"
@@ -2261,15 +2328,16 @@ with st.sidebar:
     innings_no = 1 if innings_label == "1st Innings" else 2
 
     over_points = ["0.0"]
-    for over in range(20):
+    for over in range(FULL_INNINGS_OVERS):
         for ball in range(1, 7):
             over_points.append(f"{over}.{ball}")
-    over_points.append("20.0")
+    over_points.append(f"{FULL_INNINGS_OVERS}.0")
 
+    default_start_index = min(19, len(over_points) - 1)
     start_over = st.selectbox(
         "Start Over / Ball",
         over_points,
-        index=19,
+        index=default_start_index,
         key="start_over_select",
     )
 
@@ -2306,6 +2374,10 @@ with st.sidebar:
             st.session_state.balls = int(parsed_ball)
             st.session_state.undo_stack = []
             st.session_state.last = "Starting situation set"
+            st.session_state.on_strike_index = 0
+            st.session_state.dismissed_batsmen = []
+            st.session_state.awaiting_new_batsman = False
+            st.session_state.out_slot_index = None
             st.rerun()
 
     if innings_no == 2:
@@ -2332,19 +2404,11 @@ with st.sidebar:
         st.session_state.balls = 0
         st.session_state.undo_stack = []
         st.session_state.last = ""
+        st.session_state.on_strike_index = 0
+        st.session_state.dismissed_batsmen = []
+        st.session_state.awaiting_new_batsman = False
+        st.session_state.out_slot_index = None
         st.rerun()
-
-    st.markdown("---")
-    st.subheader("Current Live State")
-    st.metric(
-        "Score",
-        f"{int(st.session_state.runs)}/{int(st.session_state.wickets)}",
-    )
-    st.metric(
-        "Over / Ball",
-        display_over(st.session_state.balls),
-    )
-    st.caption("Updates automatically after every ball/event")
 
 
 # ============================================================
@@ -2355,7 +2419,7 @@ runs = int(st.session_state.runs)
 wickets = int(st.session_state.wickets)
 balls = int(st.session_state.balls)
 
-striker_name = None if striker_choice == "Not Selected" else striker_choice
+striker_name = None if on_strike_name in (None, "Not Selected") else on_strike_name
 bowler_name = None if current_bowler_choice == "Not Selected" else current_bowler_choice
 
 batter_stats = get_batter_stats(connection, league, striker_name) if striker_name else None
@@ -2368,21 +2432,20 @@ player_adjustment_ratio, player_adjustment_confidence = compute_player_adjustmen
     batter_stats, bowler_stats, league_batting_benchmark, league_bowling_benchmark
 )
 player_context_active = bool(striker_name or bowler_name)
+pitch_context_active = pitch_choice != "Not Selected / Unknown"
+
+combined_adjustment_ratio = max(
+    0.80, min(1.30, player_adjustment_ratio * pitch_adjustment_ratio)
+)
+
+powerplay_end, death_start = get_phase_boundaries(FULL_INNINGS_OVERS)
 
 
 # ============================================================
 # LIVE MODELS - ALL RECOMPUTE AUTOMATICALLY EVERY RERUN
 # ============================================================
-# Two SEPARATE, clearly-scoped computations, never mixed together:
-#   1. FULL-MATCH model (always 20 overs) -> "Team Winning Result" box.
-#   2. WINDOW model (whatever Projection End Over is picked) -> "Score
-#      Target Analysis" box.
-# Both blend past historical data with the current live score/wickets/
-# run-rate/ground/toss, and both get a bounded player-form nudge on top
-# when a striker/bowler is selected.
 
-FULL_INNINGS_OVERS = 20
-projection_end_over_current = int(st.session_state.projection_end_over)
+projection_end_over_current = min(int(st.session_state.projection_end_over), FULL_INNINGS_OVERS)
 
 try:
     full_match_model = calculate_auto_model(
@@ -2422,9 +2485,9 @@ except Exception as error:
     st.stop()
 
 full_raw_average = float(full_historical_model["average"])
-full_adjusted_average, full_adjusted_low, full_adjusted_high = apply_player_adjustment_to_average(
+full_adjusted_average, full_adjusted_low, full_adjusted_high = apply_adjustment_to_average(
     runs, full_raw_average, full_historical_model["low"], full_historical_model["high"],
-    player_adjustment_ratio,
+    combined_adjustment_ratio,
 )
 
 st.session_state.full_historical_average = float(full_adjusted_average)
@@ -2435,7 +2498,7 @@ st.session_state.full_historical_samples = int(full_historical_model["samples"])
 
 raw_win_probability = full_match_model["win_probability"]
 if raw_win_probability is not None:
-    win_nudge = (player_adjustment_ratio - 1.0) * 40.0
+    win_nudge = (combined_adjustment_ratio - 1.0) * 40.0
     adjusted_win_probability = min(99.0, max(1.0, float(raw_win_probability) + win_nudge))
 else:
     adjusted_win_probability = None
@@ -2446,7 +2509,7 @@ st.session_state.win_samples = int(full_match_model["samples"])
 
 
 # ============================================================
-# TOP SCORE
+# TOP SCORE (the ONLY place the live score is shown)
 # ============================================================
 
 st.html(
@@ -2456,117 +2519,14 @@ st.html(
             {batting_team} {runs}/{wickets}
         </h2>
         <p class="small" style="margin:5px 0 0">
-            {display_over(balls)} ov
+            {display_over(balls)} / {FULL_INNINGS_OVERS} ov
+            • {league}
             • Ground: {ground or "—"}
-            • Toss: {toss_winner_choice if toss_winner_choice != "Unknown" else "—"}
-            {("(" + toss_decision_choice + ")") if toss_decision_choice != "Unknown" else ""}
-            • Target: {target if target > 0 else "Not set"}
             • Last: {st.session_state.last or "—"}
         </p>
     </div>
     """
 )
-
-# ------------------------------------------------------------
-# Match Context: Current Run Rate, Required Run Rate, Momentum
-# ------------------------------------------------------------
-
-current_run_rate = (runs / (balls / 6.0)) if balls > 0 else 0.0
-
-required_run_rate = None
-if innings_no == 2 and int(target) > 0:
-    remaining_runs = max(0, int(target) - runs + 1)
-    remaining_balls = max(0, (FULL_INNINGS_OVERS * 6) - balls)
-    if remaining_balls > 0:
-        required_run_rate = (remaining_runs / remaining_balls) * 6.0
-
-recent_run_rate = compute_recent_run_rate(
-    st.session_state.undo_stack, runs, balls, window_balls=12
-)
-
-context_columns = st.columns(3, gap="small")
-
-with context_columns[0]:
-    st.metric("Current Run Rate", f"{current_run_rate:.2f}")
-
-with context_columns[1]:
-    if required_run_rate is not None:
-        st.metric("Required Run Rate", f"{required_run_rate:.2f}")
-    else:
-        st.metric("Required Run Rate", "—")
-
-with context_columns[2]:
-    if recent_run_rate is not None:
-        st.metric("Momentum (last 2 ov)", f"{recent_run_rate:.2f}")
-    else:
-        st.metric("Momentum (last 2 ov)", "—")
-
-try:
-    head_to_head = get_head_to_head(connection, league, batting_team, bowling_team)
-    if head_to_head["total"] > 0:
-        st.caption(
-            f"Head-to-Head (all-time, {league}): {batting_team} "
-            f"{head_to_head['a_wins']} — {head_to_head['b_wins']} {bowling_team} "
-            f"across {fmt_int(head_to_head['total'])} matches"
-        )
-    else:
-        st.caption(f"Head-to-Head: no prior {batting_team} vs {bowling_team} matches found.")
-except Exception:
-    pass
-
-# ------------------------------------------------------------
-# Player Form (only shown when a striker/bowler is selected)
-# ------------------------------------------------------------
-
-if player_context_active:
-    player_columns = st.columns(2, gap="small")
-
-    with player_columns[0]:
-        if batter_stats:
-            avg_text = f"{batter_stats['average']:.1f}" if batter_stats["average"] is not None else "Not out yet"
-            st.html(
-                f"""
-                <div class="card">
-                    <p class="small" style="margin:0"><b>{striker_name} — Striker Form</b></p>
-                    <p style="margin:4px 0 0">
-                        SR: <b>{batter_stats['strike_rate']:.1f}</b>
-                        • Avg: <b>{avg_text}</b>
-                    </p>
-                    <p class="small" style="margin:4px 0 0">
-                        {fmt_int(batter_stats['balls'])} balls faced across
-                        {fmt_int(batter_stats['matches'])} matches in {league}
-                    </p>
-                </div>
-                """
-            )
-        elif striker_name:
-            st.caption(f"No historical data found for {striker_name} in {league}.")
-
-    with player_columns[1]:
-        if bowler_stats:
-            st.html(
-                f"""
-                <div class="card">
-                    <p class="small" style="margin:0"><b>{bowler_name} — Bowler Form</b></p>
-                    <p style="margin:4px 0 0">
-                        Economy: <b>{bowler_stats['economy']:.2f}</b>
-                        • Wickets: <b>{fmt_int(bowler_stats['wickets'])}</b>
-                    </p>
-                    <p class="small" style="margin:4px 0 0">
-                        {fmt_int(bowler_stats['balls'])} balls bowled across
-                        {fmt_int(bowler_stats['matches'])} matches in {league}
-                    </p>
-                </div>
-                """
-            )
-        elif bowler_name:
-            st.caption(f"No historical data found for {bowler_name} in {league}.")
-
-    st.caption(
-        f"Form adjustment applied to projections below: "
-        f"×{player_adjustment_ratio:.3f} on remaining runs "
-        f"(confidence {player_adjustment_confidence * 100:.0f}% based on sample size)."
-    )
 
 
 # ============================================================
@@ -2618,11 +2578,45 @@ for index, (label, add_runs, add_wicket, legal_ball) in enumerate(actions):
                 st.session_state.wickets = min(10, wickets + int(add_wicket))
 
                 if legal_ball:
-                    st.session_state.balls = balls + 1
+                    new_balls = balls + 1
+                    st.session_state.balls = new_balls
+
+                    if label == "Wicket":
+                        st.session_state.awaiting_new_batsman = True
+                        st.session_state.out_slot_index = st.session_state.get("on_strike_index", 0)
+                        if on_strike_name and on_strike_name != "Not Selected":
+                            st.session_state.dismissed_batsmen.append(on_strike_name)
+                    elif int(add_runs or 0) % 2 == 1:
+                        st.session_state.on_strike_index = 1 - st.session_state.get("on_strike_index", 0)
+
+                    if new_balls % 6 == 0:
+                        st.session_state.on_strike_index = 1 - st.session_state.get("on_strike_index", 0)
 
                 st.session_state.last = label
 
             st.rerun()
+
+if st.session_state.get("awaiting_new_batsman"):
+    out_slot = st.session_state.get("out_slot_index", 0)
+    other_slot_name = batsman_b_choice if out_slot == 0 else batsman_a_choice
+    dismissed_set = set(st.session_state.get("dismissed_batsmen", []))
+    incoming_options = ["Not Selected"] + [
+        name for name in batting_roster
+        if name not in dismissed_set and name != other_slot_name
+    ]
+    incoming_choice = st.selectbox(
+        f"New batsman in (replacing Batsman {out_slot + 1}):",
+        incoming_options,
+        key="incoming_batsman_select",
+    )
+    if st.button("Confirm New Batsman", key="confirm_new_batsman_button"):
+        if out_slot == 0:
+            st.session_state["persisted_batsman_a"] = incoming_choice
+        else:
+            st.session_state["persisted_batsman_b"] = incoming_choice
+        st.session_state.awaiting_new_batsman = False
+        st.session_state.out_slot_index = None
+        st.rerun()
 
 
 # ============================================================
@@ -2630,25 +2624,15 @@ for index, (label, add_runs, add_wicket, legal_ball) in enumerate(actions):
 # ============================================================
 
 st.subheader("Score Target Analysis")
+st.caption(f"Current: {runs}/{wickets} at over {display_over(balls)}")
 
-check_col1, check_col2, check_col3, check_col4, check_col5 = st.columns(
-    5, gap="small"
-)
-
-with check_col1:
-    st.metric("Runs", runs)
-
-with check_col2:
-    st.metric("Over", display_over(balls))
-
-with check_col3:
-    st.metric("Wkt", wickets)
+check_col4, check_col5 = st.columns(2, gap="small")
 
 with check_col4:
     projection_end_over = st.number_input(
         "Projection End Over",
         min_value=1,
-        max_value=20,
+        max_value=FULL_INNINGS_OVERS,
         value=projection_end_over_current,
         step=1,
         key="projection_end_over_widget",
@@ -2671,6 +2655,7 @@ st.session_state.projection_end_over = int(projection_end_over)
 st.session_state.score_prediction = int(score_prediction)
 
 window_over = max(int(projection_end_over), (balls + 5) // 6 if balls % 6 else balls // 6)
+window_over = min(window_over, FULL_INNINGS_OVERS)
 if window_over != int(projection_end_over):
     st.caption(
         f"Note: Over {int(projection_end_over)} is already behind the current "
@@ -2710,9 +2695,9 @@ try:
     )
 
     window_raw_average = float(window_historical_model["average"])
-    window_adjusted_average, window_adjusted_low, window_adjusted_high = apply_player_adjustment_to_average(
+    window_adjusted_average, window_adjusted_low, window_adjusted_high = apply_adjustment_to_average(
         runs, window_raw_average, window_historical_model["low"], window_historical_model["high"],
-        player_adjustment_ratio,
+        combined_adjustment_ratio,
     )
 
     st.session_state.window_cross_chance = float(window_check_result["yes"])
@@ -2730,7 +2715,7 @@ except Exception as error:
 
 
 # ============================================================
-# VASUDEV PREDICTION (window-scoped box - Over {window_over} only)
+# RESULT BOX 1: VASUDEV PREDICTION (window-scoped)
 # ============================================================
 
 window_confidence_label = (
@@ -2741,20 +2726,9 @@ window_confidence_label = (
     else "Low"
 )
 
-st.subheader("VasuDev Prediction")
-
 cross = float(st.session_state.window_cross_chance)
 under = float(st.session_state.window_stay_chance)
 result_class = "positive" if cross >= under else "negative"
-
-player_line = ""
-if player_context_active:
-    player_line = (
-        f"<p class=\"small\" style=\"margin:5px 0 0\">"
-        f"Team-only estimate: <b>{float(st.session_state.window_historical_average_raw):.1f}</b>"
-        f" • Player-adjusted: <b>{float(st.session_state.window_historical_average):.1f}</b>"
-        f"</p>"
-    )
 
 check_html = f"""
     <h1 style="margin:0">
@@ -2768,7 +2742,7 @@ check_html = f"""
     </p>
     <p class="small" style="margin:5px 0 0">
         Based on {fmt_int(st.session_state.window_samples)} similar historical
-        situations (Over {window_over} window)
+        situations
     </p>
 """
 
@@ -2785,65 +2759,14 @@ st.html(
                 Historical Range by Over {window_over}:
                 <b>{int(st.session_state.window_historical_low)} - {int(st.session_state.window_historical_high)}</b>
             </p>
-            <p style="margin:5px 0 0">
-                Similar Historical Samples:
-                <b>{fmt_int(st.session_state.window_historical_samples)}</b>
-                • Confidence: <b>{window_confidence_label}</b>
-            </p>
-            {player_line}
         </div>
     </div>
     """
 )
 
-st.caption(
-    "Auto-updates on every ball: current run-rate, wickets, ground, toss and "
-    "(if selected) player form are blended with matching historical situations "
-    "at this exact window."
-)
-
 
 # ============================================================
-# SCORE TRAJECTORY CHART (new)
-# ============================================================
-
-st.subheader("Score Trajectory")
-
-try:
-    phase_rates = get_phase_par_rates(connection, league, innings_no)
-except Exception:
-    phase_rates = {"powerplay": 7.5, "middle": 7.8, "death": 9.5}
-
-try:
-    match_trajectory = build_match_trajectory(
-        current_ball=balls,
-        current_runs=runs,
-        window_end_over=window_over,
-        target_total=float(st.session_state.window_historical_average),
-        phase_rates=phase_rates,
-    )
-    par_trajectory = build_par_trajectory(window_over, phase_rates)
-
-    all_overs = sorted(set(list(match_trajectory.keys()) + list(par_trajectory.keys())))
-    chart_df = pd.DataFrame({"Over": all_overs})
-    chart_df["Your Match (Projected)"] = chart_df["Over"].map(match_trajectory)
-    chart_df["League Average Pace"] = chart_df["Over"].map(par_trajectory)
-    chart_df = chart_df.set_index("Over")
-
-    st.line_chart(chart_df)
-    st.caption(
-        f"Shaped by this league's Powerplay ({phase_rates['powerplay']:.1f} rpo), "
-        f"Middle ({phase_rates['middle']:.1f} rpo) and Death "
-        f"({phase_rates['death']:.1f} rpo) par run rates for "
-        f"{'1st' if innings_no == 1 else '2nd'} innings, anchored to the "
-        f"Over {window_over} projection above."
-    )
-except Exception as error:
-    st.info("Trajectory chart could not be built for this situation.")
-
-
-# ============================================================
-# TEAM WINNING RESULT (always full 20-over match outcome)
+# RESULT BOX 2: TEAM WINNING RESULT (whole innings, this league's format)
 # ============================================================
 
 final_win_probability = st.session_state.win_probability
@@ -2876,7 +2799,7 @@ if final_win_probability is not None:
             </p>
             <p style="margin:5px 0 0">
                 {("Historical winner estimate" if innings_no == 1 else f"Target: {target}")}
-                • Based on {fmt_int(win_samples)} full-match historical situations
+                • Based on {fmt_int(win_samples)} historical situations
             </p>
         </div>
         """
@@ -2890,11 +2813,124 @@ else:
 
 
 # ============================================================
-# DETAILS
+# EVERYTHING ELSE - tucked into one collapsed expander
 # ============================================================
 
-with st.expander("Match & Analysis Details", expanded=False):
-    st.write(f"**League:** {league}")
+with st.expander("More Insights & Details", expanded=False):
+
+    # --- Match Context ---
+    st.write("#### Match Context")
+
+    current_run_rate = (runs / (balls / 6.0)) if balls > 0 else 0.0
+
+    required_run_rate = None
+    if innings_no == 2 and int(target) > 0:
+        remaining_runs = max(0, int(target) - runs + 1)
+        remaining_balls = max(0, (FULL_INNINGS_OVERS * 6) - balls)
+        if remaining_balls > 0:
+            required_run_rate = (remaining_runs / remaining_balls) * 6.0
+
+    recent_run_rate = compute_recent_run_rate(
+        st.session_state.undo_stack, runs, balls, window_balls=12
+    )
+
+    context_columns = st.columns(3, gap="small")
+    with context_columns[0]:
+        st.metric("Current Run Rate", f"{current_run_rate:.2f}")
+    with context_columns[1]:
+        st.metric("Required Run Rate", f"{required_run_rate:.2f}" if required_run_rate is not None else "—")
+    with context_columns[2]:
+        st.metric("Momentum (last 2 ov)", f"{recent_run_rate:.2f}" if recent_run_rate is not None else "—")
+
+    try:
+        head_to_head = get_head_to_head(connection, league, batting_team, bowling_team)
+        if head_to_head["total"] > 0:
+            st.caption(
+                f"Head-to-Head (all-time, {league}): {batting_team} "
+                f"{head_to_head['a_wins']} — {head_to_head['b_wins']} {bowling_team} "
+                f"across {fmt_int(head_to_head['total'])} matches"
+            )
+        else:
+            st.caption(f"Head-to-Head: no prior {batting_team} vs {bowling_team} matches found.")
+    except Exception:
+        pass
+
+    # --- Player Form ---
+    if player_context_active:
+        st.write("#### Player Form")
+        player_columns = st.columns(2, gap="small")
+
+        with player_columns[0]:
+            if batter_stats:
+                avg_text = f"{batter_stats['average']:.1f}" if batter_stats["average"] is not None else "Not out yet"
+                st.markdown(
+                    f"**{striker_name}** — SR: **{batter_stats['strike_rate']:.1f}** • "
+                    f"Avg: **{avg_text}**  \n"
+                    f"<span class='small'>{fmt_int(batter_stats['balls'])} balls faced, "
+                    f"{fmt_int(batter_stats['matches'])} matches in {league}</span>",
+                    unsafe_allow_html=True,
+                )
+            elif striker_name:
+                st.caption(f"No historical data found for {striker_name} in {league}.")
+
+        with player_columns[1]:
+            if bowler_stats:
+                st.markdown(
+                    f"**{bowler_name}** — Economy: **{bowler_stats['economy']:.2f}** • "
+                    f"Wickets: **{fmt_int(bowler_stats['wickets'])}**  \n"
+                    f"<span class='small'>{fmt_int(bowler_stats['balls'])} balls bowled, "
+                    f"{fmt_int(bowler_stats['matches'])} matches in {league}</span>",
+                    unsafe_allow_html=True,
+                )
+            elif bowler_name:
+                st.caption(f"No historical data found for {bowler_name} in {league}.")
+
+    if player_context_active or pitch_context_active:
+        st.caption(
+            f"Combined adjustment applied to the boxes above: "
+            f"×{combined_adjustment_ratio:.3f} on remaining runs "
+            f"(player factor ×{player_adjustment_ratio:.3f}, "
+            f"pitch factor ×{pitch_adjustment_ratio:.3f})."
+        )
+
+    # --- Score Trajectory Chart ---
+    st.write("#### Score Trajectory")
+
+    try:
+        phase_rates = get_phase_par_rates(connection, league, innings_no, powerplay_end, death_start)
+    except Exception:
+        phase_rates = {"powerplay": 7.5, "middle": 7.8, "death": 9.5}
+
+    try:
+        match_trajectory = build_match_trajectory(
+            current_ball=balls,
+            current_runs=runs,
+            window_end_over=window_over,
+            target_total=float(st.session_state.window_historical_average),
+            phase_rates=phase_rates,
+            powerplay_end=powerplay_end,
+            death_start=death_start,
+        )
+        par_trajectory = build_par_trajectory(window_over, phase_rates, powerplay_end, death_start)
+
+        all_overs = sorted(set(list(match_trajectory.keys()) + list(par_trajectory.keys())))
+        chart_df = pd.DataFrame({"Over": all_overs})
+        chart_df["Your Match (Projected)"] = chart_df["Over"].map(match_trajectory)
+        chart_df["League Average Pace"] = chart_df["Over"].map(par_trajectory)
+        chart_df = chart_df.set_index("Over")
+
+        st.line_chart(chart_df)
+        st.caption(
+            f"Powerplay (overs 1-{powerplay_end}): {phase_rates['powerplay']:.1f} rpo • "
+            f"Middle (overs {powerplay_end + 1}-{death_start}): {phase_rates['middle']:.1f} rpo • "
+            f"Death (overs {death_start + 1}-{FULL_INNINGS_OVERS}): {phase_rates['death']:.1f} rpo"
+        )
+    except Exception:
+        st.info("Trajectory chart could not be built for this situation.")
+
+    # --- Full Breakdown ---
+    st.write("#### Full Breakdown")
+    st.write(f"**League:** {league} ({FULL_INNINGS_OVERS}-over format)")
     st.write(
         f"**Current Situation:** {batting_team} {runs}/{wickets} "
         f"at {display_over(balls)} overs"
@@ -2906,13 +2942,7 @@ with st.expander("Match & Analysis Details", expanded=False):
         f"{toss_winner_choice if toss_winner_choice != 'Unknown' else 'Unknown'} "
         f"{'(' + toss_decision_choice + ')' if toss_decision_choice != 'Unknown' else ''}"
     )
-    if player_context_active:
-        st.write(
-            f"**Player Context:** Striker = {striker_name or '—'}, "
-            f"Bowler = {bowler_name or '—'} "
-            f"(adjustment ratio ×{player_adjustment_ratio:.3f}, "
-            f"confidence {player_adjustment_confidence * 100:.0f}%)"
-        )
+    st.write(f"**Pitch Condition:** {pitch_choice}")
 
     st.write("---")
     st.write(f"**Score Prediction Window: Over {window_over}**")
@@ -2921,7 +2951,7 @@ with st.expander("Match & Analysis Details", expanded=False):
         f"{float(st.session_state.window_historical_average_raw):.1f}"
     )
     st.write(
-        f"- Historical Average, player-adjusted (by Over {window_over}): "
+        f"- Historical Average, adjusted (by Over {window_over}): "
         f"{float(st.session_state.window_historical_average):.1f}"
     )
     st.write(
@@ -2934,72 +2964,34 @@ with st.expander("Match & Analysis Details", expanded=False):
         f"{fmt_int(st.session_state.window_historical_samples)} "
         f"(Confidence: {window_confidence_label})"
     )
-    st.write(
-        f"- Score Target Analysis: {int(st.session_state.score_prediction)} "
-        f"by over {window_over}"
-    )
-    st.write(
-        f"- Probability of Reaching This Score: "
-        f"{float(st.session_state.window_cross_chance):.1f}%"
-    )
-    st.write(
-        f"- Probability of Falling Short: "
-        f"{float(st.session_state.window_stay_chance):.1f}%"
-    )
 
     st.write("---")
-    st.write("**Full-Match Projection (20 overs)** — used for Winner estimate only")
-    st.write(
-        f"- Historical Average, team-only: "
-        f"{float(st.session_state.full_historical_average_raw):.1f}"
-    )
-    st.write(
-        f"- Historical Average, player-adjusted: "
-        f"{float(st.session_state.full_historical_average):.1f}"
-    )
+    st.write(f"**Full-Innings Projection ({FULL_INNINGS_OVERS} overs)** — used for Winner estimate only")
+    st.write(f"- Historical Average, team-only: {float(st.session_state.full_historical_average_raw):.1f}")
+    st.write(f"- Historical Average, adjusted: {float(st.session_state.full_historical_average):.1f}")
     st.write(
         f"- Historical Range: "
         f"{int(st.session_state.full_historical_low)} - "
         f"{int(st.session_state.full_historical_high)}"
     )
-    st.write(
-        f"- Similar Historical Samples: {fmt_int(st.session_state.full_historical_samples)}"
-    )
+    st.write(f"- Similar Historical Samples: {fmt_int(st.session_state.full_historical_samples)}")
 
     if final_win_probability is not None:
-        st.write(
-            f"- **{batting_team} Win Probability (player-adjusted):** "
-            f"{float(final_win_probability):.1f}%"
-        )
+        st.write(f"- **{batting_team} Win Probability (adjusted):** {float(final_win_probability):.1f}%")
         if st.session_state.win_probability_raw is not None:
-            st.write(
-                f"- {batting_team} Win Probability (team-only): "
-                f"{float(st.session_state.win_probability_raw):.1f}%"
-            )
-        st.write(
-            f"- **{bowling_team} Win Probability (player-adjusted):** "
-            f"{100.0 - float(final_win_probability):.1f}%"
-        )
-        st.write(f"- Based on {fmt_int(win_samples)} full-match historical situations")
+            st.write(f"- {batting_team} Win Probability (team-only): {float(st.session_state.win_probability_raw):.1f}%")
+        st.write(f"- **{bowling_team} Win Probability (adjusted):** {100.0 - float(final_win_probability):.1f}%")
+        st.write(f"- Based on {fmt_int(win_samples)} historical situations")
 
     if innings_no == 2 and int(target) > 0:
         st.write(f"**Target:** {int(target)}")
 
-    st.write("---")
-    st.write(
-        f"**Phase Par Rates (this league, {'1st' if innings_no == 1 else '2nd'} innings):** "
-        f"Powerplay {phase_rates['powerplay']:.2f} rpo • "
-        f"Middle {phase_rates['middle']:.2f} rpo • "
-        f"Death {phase_rates['death']:.2f} rpo"
-    )
-
     st.write(
         "**Similarity Context used everywhere above:** Over/Ball + Runs + "
         "Wickets + Run Rate + Batting Team + Bowling Team + Ground + Toss "
-        "(winner + decision) + Innings + Recency (recent seasons weighted "
-        "more than older ones). Player form (Striker SR / Bowler Economy) "
-        "is applied as a separate bounded nudge on top, not as part of the "
-        "similarity search itself."
+        "(winner + decision) + Innings + Recency. Player form and Pitch "
+        "Condition are separate bounded nudges applied on top, not part of "
+        "the similarity search itself."
     )
 
 
