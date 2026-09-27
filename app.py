@@ -3074,4 +3074,31 @@ with st.expander("More Insights & Details", expanded=False):
     )
     st.write(f"- Similar Historical Samples: {fmt_int(st.session_state.full_historical_samples)}")
 
-    if final_win_probability is
+    if final_win_probability is not None:
+        st.write(f"- **{batting_team} Win Probability (adjusted):** {float(final_win_probability):.1f}%")
+        if st.session_state.win_probability_raw is not None:
+            st.write(f"- {batting_team} Win Probability (team-only): {float(st.session_state.win_probability_raw):.1f}%")
+        st.write(f"- **{bowling_team} Win Probability (adjusted):** {100.0 - float(final_win_probability):.1f}%")
+        st.write(f"- Based on {fmt_int(win_samples)} historical situations")
+
+    if innings_no == 2 and int(target) > 0:
+        st.write(f"**Target:** {int(target)}")
+
+    st.write(
+        "**Similarity Context used everywhere above:** Over/Ball + Runs + "
+        "Wickets + Run Rate + Batting Team + Bowling Team + Ground + Toss "
+        "(winner + decision) + Innings + Recency. Player form and Pitch "
+        "Condition are separate bounded nudges applied on top, not part of "
+        "the similarity search itself."
+    )
+
+
+st.caption(
+    "Historical estimate only. This is not a guarantee of the live match result."
+)
+
+
+# Save the current state so a browser refresh restores it instead of
+# resetting to login/defaults. Only explicit Logout clears this.
+save_persisted_session()
+ 
