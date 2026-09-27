@@ -1046,8 +1046,9 @@ def get_values(connection, query, league):
     return [row[0] for row in rows if row[0]]
 
 
-def get_grounds(connection, league):
-    rows = connection.execute(
+@st.cache_data(show_spinner=False)
+def get_grounds(_connection, league):
+    rows = _connection.execute(
         """
         SELECT DISTINCT venue
         FROM matches
@@ -1060,8 +1061,9 @@ def get_grounds(connection, league):
     return [str(row[0]).strip() for row in rows if row[0]]
 
 
-def get_latest_season(connection, league):
-    row = connection.execute(
+@st.cache_data(show_spinner=False)
+def get_latest_season(_connection, league):
+    row = _connection.execute(
         "SELECT MAX(season) FROM matches WHERE league=? AND season IS NOT NULL",
         (league,),
     ).fetchone()
@@ -1072,12 +1074,13 @@ def get_latest_season(connection, league):
         return None
 
 
-def get_current_teams(connection, league):
-    latest_season = get_latest_season(connection, league)
+@st.cache_data(show_spinner=False)
+def get_current_teams(_connection, league):
+    latest_season = get_latest_season(_connection, league)
 
     def teams_for_seasons(seasons):
         placeholders = ",".join("?" for _ in seasons)
-        rows = connection.execute(
+        rows = _connection.execute(
             f"""
             SELECT DISTINCT d.batting_team
             FROM deliveries d
@@ -1103,7 +1106,7 @@ def get_current_teams(connection, league):
             return teams
 
     return get_values(
-        connection,
+        _connection,
         """
         SELECT DISTINCT batting_team
         FROM deliveries
@@ -1128,8 +1131,9 @@ def match_winner(connection, match_id):
     return str(row["winner"] or "").strip() if row else ""
 
 
-def get_head_to_head(connection, league, team_a, team_b):
-    rows = connection.execute(
+@st.cache_data(show_spinner=False)
+def get_head_to_head(_connection, league, team_a, team_b):
+    rows = _connection.execute(
         """
         SELECT DISTINCT d.match_id, m.winner
         FROM deliveries d
@@ -1180,18 +1184,19 @@ def compute_recent_run_rate(undo_stack, current_runs, current_balls, window_ball
 # DATABASE QUERIES - PLAYER LEVEL
 # ============================================================
 
-def get_team_roster(connection, league, team, role):
+@st.cache_data(show_spinner=False)
+def get_team_roster(_connection, league, team, role):
     if not team:
         return []
 
     column = "batter" if role == "batting" else "bowler"
     team_column = "batting_team" if role == "batting" else "bowling_team"
-    latest_season = get_latest_season(connection, league)
+    latest_season = get_latest_season(_connection, league)
     lookback = LEAGUE_ROSTER_LOOKBACK_SEASONS.get(league, DEFAULT_ROSTER_LOOKBACK_SEASONS)
 
     def names_for_seasons(seasons):
         placeholders = ",".join("?" for _ in seasons)
-        rows = connection.execute(
+        rows = _connection.execute(
             f"""
             SELECT DISTINCT d.{column}
             FROM deliveries d
@@ -1210,7 +1215,7 @@ def get_team_roster(connection, league, team, role):
         if names:
             return names
 
-    rows = connection.execute(
+    rows = _connection.execute(
         f"""
         SELECT DISTINCT {column} FROM deliveries
         WHERE league=? AND {team_column}=? AND {column}<>''
@@ -1436,76 +1441,79 @@ def recency_weight(season, latest_season):
 
 
 # ============================================================
-# BULK DATA HELPERS (the performance fix)
+# BULK DATA HELPERS (the performance fix, v2)
 # ============================================================
 #
-# The old engine called score_at()/final_score()/match_winner() - each a
-# SEPARATE SQL round trip - once per SIMILAR MATCH FOUND, of which there
-# could be 1,000-2,500. Across the 4 model calls made on every single
-# ball, that was tens of thousands of tiny queries per tap - the actual
-# cause of the ~10 second lag.
+# v1 of this fix (previous version) still fetched EVERY ball of EVERY
+# candidate match into Python and used pandas to cumsum it. That scales
+# with (matches × balls elapsed) - so it got slower and slower as an
+# innings went on, which is exactly the "fine for over 1, crawling by
+# over 10" symptom reported.
 #
-# Fix: for a given batch of candidate match_ids, pull EVERY delivery for
-# those matches in ONE query, then compute cumulative scores in memory
-# (pandas) - a single query does the work that used to take thousands.
+# v2: let SQLite do the summing. A single query with conditional SUM(...)
+# expressions returns ONE ROW PER MATCH with the cumulative value already
+# computed - no per-ball rows ever cross into Python, and no pandas. Cost
+# scales with the number of candidate MATCHES, not balls elapsed, so it
+# stays fast no matter how deep into the innings the game is.
 
-def bulk_innings_data(connection, league, innings_no, match_ids):
-    """For each match_id: its full ball-by-ball cumulative runs/wickets
-    (as parallel lists, ball_pos ascending) plus the innings' final score.
-    Reused for BOTH finding how similar a historical state is (at the
-    matched ball) AND what it turned into later (at the target over) -
-    one fetch serves both purposes."""
-    if not match_ids:
+def bulk_cumulative_at_thresholds(connection, league, innings_no, match_ids, thresholds):
+    """For each match_id: cumulative (runs, wickets) at EACH of the given
+    ball_pos thresholds, in one query. Used during matching, where the
+    handful of candidate ball positions (current ball ±2) are the
+    thresholds needed."""
+    if not match_ids or not thresholds:
         return {}
 
+    threshold_list = sorted({int(t) for t in thresholds})
+    runs_exprs = ", ".join(
+        f"SUM(CASE WHEN ball_pos<={t} THEN runs ELSE 0 END) AS r{i}"
+        for i, t in enumerate(threshold_list)
+    )
+    wkts_exprs = ", ".join(
+        f"SUM(CASE WHEN ball_pos<={t} THEN wickets ELSE 0 END) AS w{i}"
+        for i, t in enumerate(threshold_list)
+    )
     placeholders = ",".join("?" for _ in match_ids)
-    rows = connection.execute(
-        f"""
-        SELECT match_id, ball_pos, runs, wickets
+
+    query = f"""
+        SELECT match_id, {runs_exprs}, {wkts_exprs}
         FROM deliveries
         WHERE league=? AND innings_no=? AND match_id IN ({placeholders})
-        ORDER BY match_id, ball_pos
-        """,
-        [league, innings_no, *match_ids],
-    ).fetchall()
+        GROUP BY match_id
+    """
+    rows = connection.execute(query, [league, innings_no, *match_ids]).fetchall()
 
     result = {}
-    if not rows:
-        return result
-
-    frame = pd.DataFrame(
-        [(row["match_id"], row["ball_pos"], row["runs"], row["wickets"]) for row in rows],
-        columns=["match_id", "ball_pos", "runs", "wickets"],
-    )
-    frame["cum_runs"] = frame.groupby("match_id")["runs"].cumsum()
-    frame["cum_wkts"] = frame.groupby("match_id")["wickets"].cumsum()
-
-    for match_id, group in frame.groupby("match_id"):
-        # Keep the LAST row per ball_pos (extras can repeat a ball_pos) so
-        # the cumulative value reflects everything up to and including it.
-        dedup = group.drop_duplicates(subset="ball_pos", keep="last")
-        result[match_id] = {
-            "ball_positions": dedup["ball_pos"].tolist(),
-            "cum_runs": dedup["cum_runs"].tolist(),
-            "cum_wkts": dedup["cum_wkts"].tolist(),
-            "final_runs": int(dedup["cum_runs"].iloc[-1]) if len(dedup) else 0,
-        }
-
+    for row in rows:
+        per_threshold = {}
+        for i, t in enumerate(threshold_list):
+            per_threshold[t] = (int(row[f"r{i}"] or 0), int(row[f"w{i}"] or 0))
+        result[row["match_id"]] = per_threshold
     return result
 
 
-def lookup_cumulative(match_data, ball_pos):
-    """Cumulative (runs, wickets) at or before ball_pos, from the
-    structure bulk_innings_data() built - an in-memory binary search
-    instead of a database query."""
-    if not match_data or not match_data["ball_positions"]:
-        return 0, 0
-
-    positions = match_data["ball_positions"]
-    idx = bisect.bisect_right(positions, ball_pos) - 1
-    if idx < 0:
-        return 0, 0
-    return int(match_data["cum_runs"][idx]), int(match_data["cum_wkts"][idx])
+def bulk_scores_and_finals(connection, league, innings_no, match_ids, end_ball):
+    """For each match_id: score at end_ball AND the innings' final total,
+    both in one query, one row per match. Used for scoring the eventual
+    OUTCOME of each already-filtered similar state."""
+    if not match_ids:
+        return {}
+    placeholders = ",".join("?" for _ in match_ids)
+    rows = connection.execute(
+        f"""
+        SELECT match_id,
+            SUM(CASE WHEN ball_pos<=? THEN runs ELSE 0 END) AS score_at_end,
+            SUM(runs) AS final_runs
+        FROM deliveries
+        WHERE league=? AND innings_no=? AND match_id IN ({placeholders})
+        GROUP BY match_id
+        """,
+        [int(end_ball), league, innings_no, *match_ids],
+    ).fetchall()
+    return {
+        row["match_id"]: (int(row["score_at_end"] or 0), int(row["final_runs"] or 0))
+        for row in rows
+    }
 
 
 def bulk_match_winners(connection, match_ids):
@@ -1520,7 +1528,7 @@ def bulk_match_winners(connection, match_ids):
 
 
 # ============================================================
-# HISTORICAL MATCH MATCHING (toss-aware, bulk-scored)
+# HISTORICAL MATCH MATCHING (toss-aware, SQL-side scoring)
 # ============================================================
 
 def find_similar_states(
@@ -1538,11 +1546,10 @@ def find_similar_states(
     current_toss_role=None,
     current_toss_decision=None,
 ):
-    """Returns (states, bulk): states is the ranked list of comparable
-    historical situations (same as before); bulk is the bulk_innings_data
-    lookup structure for those matches, returned so the CALLER can reuse
-    it for scoring the eventual outcome without a second round of
-    per-match queries."""
+    """Returns states: the ranked list of comparable historical
+    situations. The eventual OUTCOME (score at end_ball / final score) is
+    NOT computed here - the caller fetches that separately, in bulk, only
+    for the much smaller final states list (see bulk_scores_and_finals)."""
     low_ball = max(0, int(current_ball) - 2)
     high_ball = min(int(end_ball), int(current_ball) + 2)
 
@@ -1594,7 +1601,7 @@ def find_similar_states(
                 m.season,
                 m.toss_winner,
                 m.toss_decision
-            LIMIT 6000
+            LIMIT 3000
         """
         return connection.execute(query, params).fetchall()
 
@@ -1605,10 +1612,11 @@ def find_similar_states(
         candidates = fetch_candidates("all")
 
     if not candidates:
-        return [], {}
+        return []
 
     match_ids = sorted({row["match_id"] for row in candidates})
-    bulk = bulk_innings_data(connection, league, innings_no, match_ids)
+    thresholds = sorted({int(row["ball_pos"]) for row in candidates})
+    threshold_data = bulk_cumulative_at_thresholds(connection, league, innings_no, match_ids, thresholds)
 
     latest_season = get_latest_season(connection, league)
 
@@ -1627,11 +1635,11 @@ def find_similar_states(
         historical_innings = int(row["innings_no"])
         historical_ball = int(row["ball_pos"])
 
-        match_data = bulk.get(match_id)
-        if match_data is None:
+        per_threshold = threshold_data.get(match_id)
+        if per_threshold is None:
             continue
 
-        historical_runs, historical_wickets = lookup_cumulative(match_data, historical_ball)
+        historical_runs, historical_wickets = per_threshold.get(historical_ball, (0, 0))
 
         run_gap = abs(historical_runs - int(current_runs))
         wicket_gap = abs(historical_wickets - int(current_wickets))
@@ -1709,14 +1717,7 @@ def find_similar_states(
 
     states = list(best_states.values())
     states.sort(key=lambda item: item["distance"])
-    states = states[:1200]
-
-    # Trim bulk down to only the matches actually kept, to keep the
-    # structure small for whatever the caller does with it next.
-    kept_ids = {state["match_id"] for state in states}
-    trimmed_bulk = {match_id: bulk[match_id] for match_id in kept_ids if match_id in bulk}
-
-    return states, trimmed_bulk
+    return states[:600]
 
 
 # ============================================================
@@ -1726,8 +1727,9 @@ def find_similar_states(
 CONFIDENCE_SAMPLES = 40.0
 
 
+@st.cache_data(show_spinner=False)
 def get_par_score(
-    connection,
+    _connection,
     league,
     innings_no,
     end_ball,
@@ -1757,11 +1759,11 @@ def get_par_score(
         GROUP BY d.match_id, m.season
     """
 
-    rows = connection.execute(query, params).fetchall()
+    rows = _connection.execute(query, params).fetchall()
     if not rows:
         return None
 
-    latest_season = get_latest_season(connection, league)
+    latest_season = get_latest_season(_connection, league)
 
     total_weight = 0.0
     weighted_sum = 0.0
@@ -1806,7 +1808,7 @@ def calculate_historical_average(
     current_toss_role=None,
     current_toss_decision=None,
     states=None,
-    bulk=None,
+    scores_and_finals=None,
 ):
     end_ball = int(session_over) * 6
 
@@ -1818,8 +1820,8 @@ def calculate_historical_average(
             "samples": 0,
         }
 
-    if states is None or bulk is None:
-        states, bulk = find_similar_states(
+    if states is None:
+        states = find_similar_states(
             connection, league, innings_no, current_ball, current_runs,
             current_wickets, end_ball, batting_team, bowling_team, ground,
             exclude_match_id=exclude_match_id,
@@ -1835,17 +1837,23 @@ def calculate_historical_average(
             "samples": 0,
         }
 
+    if scores_and_finals is None:
+        scores_and_finals = bulk_scores_and_finals(
+            connection, league, innings_no,
+            [state["match_id"] for state in states], end_ball,
+        )
+
     values = []
     weights = []
 
     for state in states:
-        match_data = bulk.get(state["match_id"])
-        if match_data is None:
+        data = scores_and_finals.get(state["match_id"])
+        if data is None:
             continue
 
-        session_score, _ = lookup_cumulative(match_data, end_ball)
+        session_score, final_runs = data
         if session_score < state["runs"]:
-            session_score = match_data["final_runs"]
+            session_score = final_runs
 
         session_score = max(int(current_runs), int(session_score))
         weight = (
@@ -1925,7 +1933,7 @@ def calculate_auto_model(
     current_toss_role=None,
     current_toss_decision=None,
     states=None,
-    bulk=None,
+    scores_and_finals=None,
 ):
     end_ball = int(session_over) * 6
 
@@ -1940,8 +1948,8 @@ def calculate_auto_model(
             "samples": 0,
         }
 
-    if states is None or bulk is None:
-        states, bulk = find_similar_states(
+    if states is None:
+        states = find_similar_states(
             connection, league, innings_no, current_ball, current_runs,
             current_wickets, end_ball, batting_team, bowling_team, ground,
             exclude_match_id=exclude_match_id,
@@ -1960,6 +1968,12 @@ def calculate_auto_model(
             "samples": 0,
         }
 
+    if scores_and_finals is None:
+        scores_and_finals = bulk_scores_and_finals(
+            connection, league, innings_no,
+            [state["match_id"] for state in states], end_ball,
+        )
+
     winners = bulk_match_winners(connection, [state["match_id"] for state in states])
 
     scores = []
@@ -1967,13 +1981,13 @@ def calculate_auto_model(
     win_results = []
 
     for state in states:
-        match_data = bulk.get(state["match_id"])
-        if match_data is None:
+        data = scores_and_finals.get(state["match_id"])
+        if data is None:
             continue
 
-        session_score, _ = lookup_cumulative(match_data, end_ball)
+        session_score, final_runs = data
         if session_score < state["runs"]:
-            session_score = match_data["final_runs"]
+            session_score = final_runs
 
         session_score = max(int(current_runs), int(session_score))
 
@@ -1989,7 +2003,7 @@ def calculate_auto_model(
             )
         elif int(innings_no) == 2 and int(target) > 0:
             win_results.append(
-                1 if match_data["final_runs"] >= int(target) else 0
+                1 if final_runs >= int(target) else 0
             )
 
     total_weight = sum(weights)
@@ -2062,12 +2076,12 @@ def calculate_manual_probability(
     current_toss_role=None,
     current_toss_decision=None,
     states=None,
-    bulk=None,
+    scores_and_finals=None,
 ):
     end_ball = int(session_over) * 6
 
-    if states is None or bulk is None:
-        states, bulk = find_similar_states(
+    if states is None:
+        states = find_similar_states(
             connection, league, innings_no, current_ball, current_runs,
             current_wickets, end_ball, batting_team, bowling_team, ground,
             exclude_match_id=exclude_match_id,
@@ -2078,17 +2092,23 @@ def calculate_manual_probability(
     if not states:
         return {"yes": 0.0, "no": 100.0, "samples": 0}
 
+    if scores_and_finals is None:
+        scores_and_finals = bulk_scores_and_finals(
+            connection, league, innings_no,
+            [state["match_id"] for state in states], end_ball,
+        )
+
     total_weight = 0.0
     yes_weight = 0.0
 
     for state in states:
-        match_data = bulk.get(state["match_id"])
-        if match_data is None:
+        data = scores_and_finals.get(state["match_id"])
+        if data is None:
             continue
 
-        session_score, _ = lookup_cumulative(match_data, end_ball)
+        session_score, final_runs = data
         if session_score < state["runs"]:
-            session_score = match_data["final_runs"]
+            session_score = final_runs
 
         weight = (1.0 / (1.0 + float(state["distance"]))) * float(state.get("recency_weight", 1.0))
         total_weight += weight
@@ -2210,8 +2230,17 @@ with st.sidebar:
 
     FULL_INNINGS_OVERS = LEAGUE_FORMAT_OVERS.get(league, 20)
 
+    ready_leagues = st.session_state.setdefault("ready_leagues", {})
+
     try:
-        database_path = ensure_database(league)
+        if league in ready_leagues:
+            # Already confirmed valid earlier this session - skip
+            # re-running database_is_valid's fresh connection + COUNT
+            # queries on every single ball tap.
+            database_path = Path(ready_leagues[league])
+        else:
+            database_path = ensure_database(league)
+            ready_leagues[league] = str(database_path.resolve())
         connection = get_connection(str(database_path.resolve()))
     except Exception as error:
         st.error("Database start nahi ho saka.")
@@ -2489,99 +2518,8 @@ powerplay_end, death_start = get_phase_boundaries(FULL_INNINGS_OVERS)
 
 
 # ============================================================
-# LIVE MODELS - ONE SHARED SEARCH PER DISTINCT WINDOW
-# ============================================================
-# Full-innings win-probability AND full-innings historical average used
-# to each run their OWN duplicate similarity search (same query, twice).
-# Now: ONE find_similar_states() call per distinct end_ball, its result
-# reused by both consumers. This - plus the bulk-query rewrite above - is
-# what takes ball updates from ~10 seconds to near-instant.
-
-projection_end_over_current = min(int(st.session_state.projection_end_over), FULL_INNINGS_OVERS)
-full_end_ball = FULL_INNINGS_OVERS * 6
-
-try:
-    full_states, full_bulk = find_similar_states(
-        connection=connection,
-        league=league,
-        innings_no=innings_no,
-        current_ball=balls,
-        current_runs=runs,
-        current_wickets=wickets,
-        end_ball=full_end_ball,
-        batting_team=batting_team,
-        bowling_team=bowling_team,
-        ground=ground,
-        current_toss_role=current_toss_role,
-        current_toss_decision=current_toss_decision,
-    )
-
-    full_match_model = calculate_auto_model(
-        connection=connection,
-        league=league,
-        innings_no=innings_no,
-        current_ball=balls,
-        current_runs=runs,
-        current_wickets=wickets,
-        session_over=FULL_INNINGS_OVERS,
-        batting_team=batting_team,
-        bowling_team=bowling_team,
-        target=int(target),
-        ground=ground,
-        current_toss_role=current_toss_role,
-        current_toss_decision=current_toss_decision,
-        states=full_states,
-        bulk=full_bulk,
-    )
-
-    full_historical_model = calculate_historical_average(
-        connection=connection,
-        league=league,
-        innings_no=innings_no,
-        current_ball=balls,
-        current_runs=runs,
-        current_wickets=wickets,
-        session_over=FULL_INNINGS_OVERS,
-        batting_team=batting_team,
-        bowling_team=bowling_team,
-        ground=ground,
-        current_toss_role=current_toss_role,
-        current_toss_decision=current_toss_decision,
-        states=full_states,
-        bulk=full_bulk,
-    )
-
-except Exception as error:
-    st.error("Model calculation failed.")
-    st.exception(error)
-    st.stop()
-
-full_raw_average = float(full_historical_model["average"])
-full_adjusted_average, full_adjusted_low, full_adjusted_high = apply_adjustment_to_average(
-    runs, full_raw_average, full_historical_model["low"], full_historical_model["high"],
-    combined_adjustment_ratio,
-)
-
-st.session_state.full_historical_average = float(full_adjusted_average)
-st.session_state.full_historical_average_raw = float(full_raw_average)
-st.session_state.full_historical_low = int(full_adjusted_low)
-st.session_state.full_historical_high = int(full_adjusted_high)
-st.session_state.full_historical_samples = int(full_historical_model["samples"])
-
-raw_win_probability = full_match_model["win_probability"]
-if raw_win_probability is not None:
-    win_nudge = (combined_adjustment_ratio - 1.0) * 40.0
-    adjusted_win_probability = min(99.0, max(1.0, float(raw_win_probability) + win_nudge))
-else:
-    adjusted_win_probability = None
-
-st.session_state.win_probability = adjusted_win_probability
-st.session_state.win_probability_raw = raw_win_probability
-st.session_state.win_samples = int(full_match_model["samples"])
-
-
-# ============================================================
-# TOP SCORE (the ONLY place the live score is shown)
+# TOP SCORE (the ONLY place the live score is shown) - instant,
+# needs nothing beyond runs/wickets/balls, no database work at all.
 # ============================================================
 
 st.html(
@@ -2602,7 +2540,12 @@ st.html(
 
 
 # ============================================================
-# BALL CONTROLS
+# BALL CONTROLS - INSTANT. This is the actual fix for the lag: tapping
+# a ball only ever touches st.session_state (runs/wickets/balls/strike
+# rotation) and reruns the script - it never runs a database query and
+# never touches the historical-similarity search. Updating the score is
+# now as fast as Streamlit itself can rerun a script (a fraction of a
+# second), regardless of how big the league's database is.
 # ============================================================
 
 st.subheader("Ball-by-Ball Update")
@@ -2692,7 +2635,7 @@ if st.session_state.get("awaiting_new_batsman"):
 
 
 # ============================================================
-# SCORE TARGET ANALYSIS (window-scoped, auto-recalculated every ball)
+# SCORE TARGET ANALYSIS - just the two inputs here, still instant.
 # ============================================================
 
 st.subheader("Score Target Analysis")
@@ -2705,7 +2648,7 @@ with check_col4:
         "Projection End Over",
         min_value=1,
         max_value=FULL_INNINGS_OVERS,
-        value=projection_end_over_current,
+        value=min(int(st.session_state.projection_end_over), FULL_INNINGS_OVERS),
         step=1,
         key="projection_end_over_widget",
     )
@@ -2736,20 +2679,47 @@ if window_over != int(projection_end_over):
 
 window_end_ball = window_over * 6
 
-try:
-    if window_over == FULL_INNINGS_OVERS:
-        # Same window as the full-innings search above - reuse it instead
-        # of searching again.
-        window_states, window_bulk = full_states, full_bulk
-    else:
-        window_states, window_bulk = find_similar_states(
+
+# ============================================================
+# UPDATE PREDICTION - the ONLY thing that runs the historical-
+# similarity search. This is the deliberate trade the person asked
+# for: scoring stays instant (above), and the heavy calculation - which
+# already automatically factors in toss, ground, pitch condition,
+# player form, and recency - runs only when this button is pressed, on
+# the CURRENT live score at that moment. It also runs once automatically
+# on first load so the boxes below are never empty.
+# ============================================================
+
+state_signature = (
+    league, batting_team, bowling_team, ground, innings_no, int(target),
+    runs, wickets, balls, current_toss_role, current_toss_decision,
+    window_over, int(st.session_state.score_prediction),
+    striker_name, bowler_name, pitch_choice,
+)
+
+is_stale = st.session_state.get("prediction_signature") != state_signature
+
+update_clicked = st.button(
+    "🔄 Update Prediction (uses the score above)",
+    use_container_width=True,
+    key="update_prediction_button",
+    type="primary",
+)
+
+should_compute = update_clicked or "prediction_signature" not in st.session_state
+
+if should_compute:
+    full_end_ball = FULL_INNINGS_OVERS * 6
+
+    try:
+        full_states = find_similar_states(
             connection=connection,
             league=league,
             innings_no=innings_no,
             current_ball=balls,
             current_runs=runs,
             current_wickets=wickets,
-            end_ball=window_end_ball,
+            end_ball=full_end_ball,
             batting_team=batting_team,
             bowling_team=bowling_team,
             ground=ground,
@@ -2757,59 +2727,156 @@ try:
             current_toss_decision=current_toss_decision,
         )
 
-    window_check_result = calculate_manual_probability(
-        connection=connection,
-        league=league,
-        innings_no=innings_no,
-        current_ball=balls,
-        current_runs=runs,
-        current_wickets=wickets,
-        session_over=window_over,
-        batting_team=batting_team,
-        bowling_team=bowling_team,
-        line_high=int(st.session_state.score_prediction),
-        ground=ground,
-        current_toss_role=current_toss_role,
-        current_toss_decision=current_toss_decision,
-        states=window_states,
-        bulk=window_bulk,
+        full_scores_and_finals = bulk_scores_and_finals(
+            connection, league, innings_no,
+            [state["match_id"] for state in full_states], full_end_ball,
+        )
+
+        full_match_model = calculate_auto_model(
+            connection=connection,
+            league=league,
+            innings_no=innings_no,
+            current_ball=balls,
+            current_runs=runs,
+            current_wickets=wickets,
+            session_over=FULL_INNINGS_OVERS,
+            batting_team=batting_team,
+            bowling_team=bowling_team,
+            target=int(target),
+            ground=ground,
+            current_toss_role=current_toss_role,
+            current_toss_decision=current_toss_decision,
+            states=full_states,
+            scores_and_finals=full_scores_and_finals,
+        )
+
+        full_historical_model = calculate_historical_average(
+            connection=connection,
+            league=league,
+            innings_no=innings_no,
+            current_ball=balls,
+            current_runs=runs,
+            current_wickets=wickets,
+            session_over=FULL_INNINGS_OVERS,
+            batting_team=batting_team,
+            bowling_team=bowling_team,
+            ground=ground,
+            current_toss_role=current_toss_role,
+            current_toss_decision=current_toss_decision,
+            states=full_states,
+            scores_and_finals=full_scores_and_finals,
+        )
+
+        full_raw_average = float(full_historical_model["average"])
+        full_adjusted_average, full_adjusted_low, full_adjusted_high = apply_adjustment_to_average(
+            runs, full_raw_average, full_historical_model["low"], full_historical_model["high"],
+            combined_adjustment_ratio,
+        )
+
+        st.session_state.full_historical_average = float(full_adjusted_average)
+        st.session_state.full_historical_average_raw = float(full_raw_average)
+        st.session_state.full_historical_low = int(full_adjusted_low)
+        st.session_state.full_historical_high = int(full_adjusted_high)
+        st.session_state.full_historical_samples = int(full_historical_model["samples"])
+
+        raw_win_probability = full_match_model["win_probability"]
+        if raw_win_probability is not None:
+            win_nudge = (combined_adjustment_ratio - 1.0) * 40.0
+            adjusted_win_probability = min(99.0, max(1.0, float(raw_win_probability) + win_nudge))
+        else:
+            adjusted_win_probability = None
+
+        st.session_state.win_probability = adjusted_win_probability
+        st.session_state.win_probability_raw = raw_win_probability
+        st.session_state.win_samples = int(full_match_model["samples"])
+
+        if window_over == FULL_INNINGS_OVERS:
+            # Same window as the full-innings search above - reuse it
+            # instead of searching again.
+            window_states, window_scores_and_finals = full_states, full_scores_and_finals
+        else:
+            window_states = find_similar_states(
+                connection=connection,
+                league=league,
+                innings_no=innings_no,
+                current_ball=balls,
+                current_runs=runs,
+                current_wickets=wickets,
+                end_ball=window_end_ball,
+                batting_team=batting_team,
+                bowling_team=bowling_team,
+                ground=ground,
+                current_toss_role=current_toss_role,
+                current_toss_decision=current_toss_decision,
+            )
+            window_scores_and_finals = bulk_scores_and_finals(
+                connection, league, innings_no,
+                [state["match_id"] for state in window_states], window_end_ball,
+            )
+
+        window_check_result = calculate_manual_probability(
+            connection=connection,
+            league=league,
+            innings_no=innings_no,
+            current_ball=balls,
+            current_runs=runs,
+            current_wickets=wickets,
+            session_over=window_over,
+            batting_team=batting_team,
+            bowling_team=bowling_team,
+            line_high=int(st.session_state.score_prediction),
+            ground=ground,
+            current_toss_role=current_toss_role,
+            current_toss_decision=current_toss_decision,
+            states=window_states,
+            scores_and_finals=window_scores_and_finals,
+        )
+
+        window_historical_model = calculate_historical_average(
+            connection=connection,
+            league=league,
+            innings_no=innings_no,
+            current_ball=balls,
+            current_runs=runs,
+            current_wickets=wickets,
+            session_over=window_over,
+            batting_team=batting_team,
+            bowling_team=bowling_team,
+            ground=ground,
+            current_toss_role=current_toss_role,
+            current_toss_decision=current_toss_decision,
+            states=window_states,
+            scores_and_finals=window_scores_and_finals,
+        )
+
+        window_raw_average = float(window_historical_model["average"])
+        window_adjusted_average, window_adjusted_low, window_adjusted_high = apply_adjustment_to_average(
+            runs, window_raw_average, window_historical_model["low"], window_historical_model["high"],
+            combined_adjustment_ratio,
+        )
+
+        st.session_state.window_cross_chance = float(window_check_result["yes"])
+        st.session_state.window_stay_chance = float(window_check_result["no"])
+        st.session_state.window_samples = int(window_check_result["samples"])
+        st.session_state.window_historical_average = float(window_adjusted_average)
+        st.session_state.window_historical_average_raw = float(window_raw_average)
+        st.session_state.window_historical_low = int(window_adjusted_low)
+        st.session_state.window_historical_high = int(window_adjusted_high)
+        st.session_state.window_historical_samples = int(window_historical_model["samples"])
+
+        st.session_state.prediction_signature = state_signature
+
+    except Exception as error:
+        st.error("Prediction calculation failed.")
+        st.exception(error)
+
+elif is_stale:
+    st.caption(
+        "⚠️ Score or settings changed since the last update - tap "
+        "'Update Prediction' to refresh the boxes below."
     )
-
-    window_historical_model = calculate_historical_average(
-        connection=connection,
-        league=league,
-        innings_no=innings_no,
-        current_ball=balls,
-        current_runs=runs,
-        current_wickets=wickets,
-        session_over=window_over,
-        batting_team=batting_team,
-        bowling_team=bowling_team,
-        ground=ground,
-        current_toss_role=current_toss_role,
-        current_toss_decision=current_toss_decision,
-        states=window_states,
-        bulk=window_bulk,
-    )
-
-    window_raw_average = float(window_historical_model["average"])
-    window_adjusted_average, window_adjusted_low, window_adjusted_high = apply_adjustment_to_average(
-        runs, window_raw_average, window_historical_model["low"], window_historical_model["high"],
-        combined_adjustment_ratio,
-    )
-
-    st.session_state.window_cross_chance = float(window_check_result["yes"])
-    st.session_state.window_stay_chance = float(window_check_result["no"])
-    st.session_state.window_samples = int(window_check_result["samples"])
-    st.session_state.window_historical_average = float(window_adjusted_average)
-    st.session_state.window_historical_average_raw = float(window_raw_average)
-    st.session_state.window_historical_low = int(window_adjusted_low)
-    st.session_state.window_historical_high = int(window_adjusted_high)
-    st.session_state.window_historical_samples = int(window_historical_model["samples"])
-
-except Exception as error:
-    st.error("Score Target Analysis calculation failed.")
-    st.exception(error)
+else:
+    st.caption("✅ Prediction is up to date with the current score.")
 
 
 # ============================================================
@@ -3101,4 +3168,3 @@ st.caption(
 # Save the current state so a browser refresh restores it instead of
 # resetting to login/defaults. Only explicit Logout clears this.
 save_persisted_session()
- 
