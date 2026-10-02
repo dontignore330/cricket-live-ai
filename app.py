@@ -2447,8 +2447,20 @@ with st.sidebar:
         st.session_state.target = 0
 
     st.markdown("---")
-st.subheader("Players (optional)")
-st.caption("Set once. Strike rotates automatically; a wicket asks for the next batter.")
+    st.subheader("Conditions")
+    pitch_options = list(PITCH_CONDITIONS.keys())
+    pitch_choice = st.selectbox("Pitch", pitch_options,
+                                index=restored_index(pitch_options, "persisted_pitch_condition"),
+                                key="pitch_condition_select")
+    st.session_state["persisted_pitch_condition"] = pitch_choice
+    dew_options = list(DEW_OPTIONS.keys())
+    dew_choice = st.selectbox("Dew", dew_options, index=restored_index(dew_options, "persisted_dew"),
+                              key="dew_select")
+    st.session_state["persisted_dew"] = dew_choice
+
+    st.markdown("---")
+    st.subheader("Players (optional)")
+    st.caption("Set once. Strike rotates automatically; a wicket asks for the next batter.")
 batting_roster = get_team_roster(connection, league, batting_team, "batting")
 batsman_options = ["Not Selected"] + batting_roster
 batsman_a = select_with_manual_option("Batsman 1", batsman_options, "persisted_batsman_a",
@@ -3125,15 +3137,3 @@ st.caption(
 
 st.caption("Historical estimate only. Not a guarantee of the live match result.")
 save_persisted_session()
-    st.subheader("Conditions")
-    pitch_options = list(PITCH_CONDITIONS.keys())
-    pitch_choice = st.selectbox("Pitch", pitch_options,
-                                index=restored_index(pitch_options, "persisted_pitch_condition"),
-                                key="pitch_condition_select")
-    st.session_state["persisted_pitch_condition"] = pitch_choice
-    dew_options = list(DEW_OPTIONS.keys())
-    dew_choice = st.selectbox("Dew", dew_options, index=restored_index(dew_options, "persisted_dew"),
-                              key="dew_select")
-    st.session_state["persisted_dew"] = dew_choice
-
-    autom
