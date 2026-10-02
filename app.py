@@ -2461,225 +2461,224 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Players (optional)")
     st.caption("Set once. Strike rotates automatically; a wicket asks for the next batter.")
-batting_roster = get_team_roster(connection, league, batting_team, "batting")
-batsman_options = ["Not Selected"] + batting_roster
-batsman_a = select_with_manual_option("Batsman 1", batsman_options, "persisted_batsman_a",
-"persisted_batsman_a_manual", "batsman_a")
-batsman_b = select_with_manual_option("Batsman 2", batsman_options, "persisted_batsman_b",
-"persisted_batsman_b_manual", "batsman_b")
-strike_idx = int(st.session_state.get("on_strike_index", 0))
-on_strike_name = batsman_a if strike_idx == 0 else batsman_b
-st.caption(f"On strike: {on_strike_name if on_strike_name != 'Not Selected' else '-'}")
-if st.button("Swap Strike", use_container_width=True, key="swap_strike_button"):
-st.session_state.on_strike_index = 1 - strike_idx
-st.rerun()
-bowler_options = ["Not Selected"] + get_team_roster(connection, league, bowling_team, "bowling")
-bowler_choice = select_with_manual_option("Current Bowler", bowler_options, "persisted_current_bowler",
-"persisted_current_bowler_manual", "current_bowler")
+    batting_roster = get_team_roster(connection, league, batting_team, "batting")
+    batsman_options = ["Not Selected"] + batting_roster
+    batsman_a = select_with_manual_option("Batsman 1", batsman_options, "persisted_batsman_a",
+                                          "persisted_batsman_a_manual", "batsman_a")
+    batsman_b = select_with_manual_option("Batsman 2", batsman_options, "persisted_batsman_b",
+                                          "persisted_batsman_b_manual", "batsman_b")
+    strike_idx = int(st.session_state.get("on_strike_index", 0))
+    on_strike_name = batsman_a if strike_idx == 0 else batsman_b
+    st.caption(f"On strike: **{on_strike_name if on_strike_name != 'Not Selected' else '-'}**")
+    if st.button("Swap Strike", use_container_width=True, key="swap_strike_button"):
+        st.session_state.on_strike_index = 1 - strike_idx
+        st.rerun()
+    bowler_options = ["Not Selected"] + get_team_roster(connection, league, bowling_team, "bowling")
+    bowler_choice = select_with_manual_option("Current Bowler", bowler_options, "persisted_current_bowler",
+                                              "persisted_current_bowler_manual", "current_bowler")
 
-bowling_roster_full = get_team_roster(connection, league, bowling_team, "bowling")  
+    bowling_roster_full = get_team_roster(connection, league, bowling_team, "bowling")
 
-if (st.session_state.get("live_mode_on") and live_raw  
-        and st.session_state.get("live_applied_xi_for") != st.session_state.get("live_selected_id")):  
-    parsed_live = parse_live_match(live_raw)  
-    players_by_team = parsed_live.get("players_by_team") or {}  
-    for api_team_name, names in players_by_team.items():  
-        target_roster, target_key, is_bat = None, None, None  
-        if match_name_to_roster(api_team_name, [batting_team]):  
-            target_roster, target_key, is_bat = batting_roster, "persisted_batting_xi", True  
-        elif match_name_to_roster(api_team_name, [bowling_team]):  
-            target_roster, target_key, is_bat = bowling_roster_full, "persisted_bowling_xi", False  
-        if target_roster is None:  
-            continue  
-        mapped = [match_name_to_roster(n, target_roster) for n in names]  
-        mapped = [m for m in mapped if m]  
-        if mapped:  
-            st.session_state[target_key] = mapped  
-    st.session_state["live_applied_xi_for"] = st.session_state.get("live_selected_id")  
+    if (st.session_state.get("live_mode_on") and live_raw
+            and st.session_state.get("live_applied_xi_for") != st.session_state.get("live_selected_id")):
+        parsed_live = parse_live_match(live_raw)
+        players_by_team = parsed_live.get("players_by_team") or {}
+        for api_team_name, names in players_by_team.items():
+            target_roster, target_key, is_bat = None, None, None
+            if match_name_to_roster(api_team_name, [batting_team]):
+                target_roster, target_key, is_bat = batting_roster, "persisted_batting_xi", True
+            elif match_name_to_roster(api_team_name, [bowling_team]):
+                target_roster, target_key, is_bat = bowling_roster_full, "persisted_bowling_xi", False
+            if target_roster is None:
+                continue
+            mapped = [match_name_to_roster(n, target_roster) for n in names]
+            mapped = [m for m in mapped if m]
+            if mapped:
+                st.session_state[target_key] = mapped
+        st.session_state["live_applied_xi_for"] = st.session_state.get("live_selected_id")
 
-st.markdown("---")  
-st.subheader("Playing XI (optional)")  
-st.caption(  
-    "If today's actual XI differs from the season average (injuries, "  
-    "rotation, a strong/weak XI), naming them here shifts the "  
-    "prediction toward THIS XI's real record instead of the team's "  
-    "season-wide average. Leave empty to just use the team average."  
-)  
-batting_xi = st.multiselect(  
-    f"{batting_team} Playing XI (batters)", batting_roster,  
-    default=[n for n in st.session_state.get("persisted_batting_xi", []) if n in batting_roster],  
-    key="batting_xi_select",  
-)  
-st.session_state["persisted_batting_xi"] = batting_xi  
-bowling_xi = st.multiselect(  
-    f"{bowling_team} Playing XI (bowlers)", bowling_roster_full,  
-    default=[n for n in st.session_state.get("persisted_bowling_xi", []) if n in bowling_roster_full],  
-    key="bowling_xi_select",  
-)  
-st.session_state["persisted_bowling_xi"] = bowling_xi  
+    st.markdown("---")
+    st.subheader("Playing XI (optional)")
+    st.caption(
+        "If today's actual XI differs from the season average (injuries, "
+        "rotation, a strong/weak XI), naming them here shifts the "
+        "prediction toward THIS XI's real record instead of the team's "
+        "season-wide average. Leave empty to just use the team average."
+    )
+    batting_xi = st.multiselect(
+        f"{batting_team} Playing XI (batters)", batting_roster,
+        default=[n for n in st.session_state.get("persisted_batting_xi", []) if n in batting_roster],
+        key="batting_xi_select",
+    )
+    st.session_state["persisted_batting_xi"] = batting_xi
+    bowling_xi = st.multiselect(
+        f"{bowling_team} Playing XI (bowlers)", bowling_roster_full,
+        default=[n for n in st.session_state.get("persisted_bowling_xi", []) if n in bowling_roster_full],
+        key="bowling_xi_select",
+    )
+    st.session_state["persisted_bowling_xi"] = bowling_xi
 
-# --- Live Mode: controlled score sync (only on explicit tap) ---  
-if st.session_state.get("live_mode_on"):  
-    st.markdown("---")  
-    st.subheader("Live Score Sync")  
-    if not st.session_state.get("live_selected_id"):  
-        st.caption("Load a match above first.")  
-    else:  
-        if st.button("🔄 FETCH LIVE UPDATE", use_container_width=True, type="primary", key="fetch_live_update_button"):  
-            detail, error = fetch_match_details(st.session_state["live_selected_id"])  
-            if error:  
-                st.session_state["live_last_fetch_note"] = error  
-            else:  
-                st.session_state["live_match_raw"] = detail  
-                parsed = parse_live_match(detail)  
-                new_balls = parse_over_ball(parsed.get("overs"))  
-                new_runs = parsed.get("runs")  
-                new_wkts = parsed.get("wickets")  
-                inn_key = f"{st.session_state['live_selected_id']}|{parsed.get('innings_label')}"  
-                ingested = st.session_state.setdefault("live_ingested_keys", {})  
-                prev = ingested.get(inn_key)  
+    # --- Live Mode: controlled score sync (only on explicit tap) ---
+    if st.session_state.get("live_mode_on"):
+        st.markdown("---")
+        st.subheader("Live Score Sync")
+        if not st.session_state.get("live_selected_id"):
+            st.caption("Load a match above first.")
+        else:
+            if st.button("🔄 FETCH LIVE UPDATE", use_container_width=True, type="primary", key="fetch_live_update_button"):
+                detail, error = fetch_match_details(st.session_state["live_selected_id"])
+                if error:
+                    st.session_state["live_last_fetch_note"] = error
+                else:
+                    st.session_state["live_match_raw"] = detail
+                    parsed = parse_live_match(detail)
+                    new_balls = parse_over_ball(parsed.get("overs"))
+                    new_runs = parsed.get("runs")
+                    new_wkts = parsed.get("wickets")
+                    inn_key = f"{st.session_state['live_selected_id']}|{parsed.get('innings_label')}"
+                    ingested = st.session_state.setdefault("live_ingested_keys", {})
+                    prev = ingested.get(inn_key)
 
-                if new_balls is None or new_runs is None:  
-                    st.session_state["live_last_fetch_note"] = (  
-                        "Live API didn't return a usable current score for this match right now."  
-                    )  
-                elif prev and new_balls < prev["balls"]:  
-                    # A NEW innings started (ball count went backwards) -  
-                    # treat as fresh rather than corrupting the old one.  
-                    ingested[inn_key] = {"balls": new_balls, "runs": new_runs, "wickets": new_wkts or 0}  
-                    st.session_state.runs = int(new_runs)  
-                    st.session_state.wickets = int(new_wkts or 0)  
-                    st.session_state.balls = int(new_balls)  
-                    st.session_state.recent_balls = []  
-                    st.session_state.last = "Live sync (new innings)"  
-                    st.session_state["live_last_fetch_note"] = (  
-                        f"Synced fresh innings: {new_runs}/{new_wkts or 0} at "  
-                        f"{display_over(new_balls)}."  
-                    )  
-                elif not prev:  
-                    ingested[inn_key] = {"balls": new_balls, "runs": new_runs, "wickets": new_wkts or 0}  
-                    st.session_state.runs = int(new_runs)  
-                    st.session_state.wickets = int(new_wkts or 0)  
-                    st.session_state.balls = int(new_balls)  
-                    st.session_state.last = "Live sync"  
-                    st.session_state["live_last_fetch_note"] = (  
-                        f"First sync for this innings: {new_runs}/{new_wkts or 0} at "  
-                        f"{display_over(new_balls)}."  
-                    )  
-                else:  
-                    balls_gained = new_balls - prev["balls"]  
-                    runs_gained = new_runs - prev["runs"]  
-                    if balls_gained == 0:  
-                        note = "Already up to date - no new balls since the last fetch."  
-                    else:  
-                        # True ball-by-ball is not reliably available on  
-                        # this plan (see fetch_ball_by_ball) - we do NOT  
-                        # invent individual deliveries. Instead the  
-                        # actual runs-per-ball since the last fetch is  
-                        # recorded as one momentum sample, which is  
-                        # honest about what is and isn't known.  
-                        avg_per_ball = runs_gained / balls_gained if balls_gained else 0.0  
-                        st.session_state.recent_balls = (  
-                            list(st.session_state.recent_balls) + [avg_per_ball] * min(balls_gained, 18)  
-                        )[-18:]  
-                        note = (  
-                            f"Synced {balls_gained} ball(s), {runs_gained} run(s) since last fetch "  
-                            f"(gap covered as an average rate, not invented ball-by-ball)."  
-                        )  
-                    ingested[inn_key] = {"balls": new_balls, "runs": new_runs, "wickets": new_wkts or 0}  
-                    st.session_state.runs = int(new_runs)  
-                    st.session_state.wickets = int(new_wkts or 0)  
-                    st.session_state.balls = int(new_balls)  
-                    st.session_state.last = "Live sync"  
-                    st.session_state["live_last_fetch_note"] = note  
+                    if new_balls is None or new_runs is None:
+                        st.session_state["live_last_fetch_note"] = (
+                            "Live API didn't return a usable current score for this match right now."
+                        )
+                    elif prev and new_balls < prev["balls"]:
+                        # A NEW innings started (ball count went backwards) -
+                        # treat as fresh rather than corrupting the old one.
+                        ingested[inn_key] = {"balls": new_balls, "runs": new_runs, "wickets": new_wkts or 0}
+                        st.session_state.runs = int(new_runs)
+                        st.session_state.wickets = int(new_wkts or 0)
+                        st.session_state.balls = int(new_balls)
+                        st.session_state.recent_balls = []
+                        st.session_state.last = "Live sync (new innings)"
+                        st.session_state["live_last_fetch_note"] = (
+                            f"Synced fresh innings: {new_runs}/{new_wkts or 0} at "
+                            f"{display_over(new_balls)}."
+                        )
+                    elif not prev:
+                        ingested[inn_key] = {"balls": new_balls, "runs": new_runs, "wickets": new_wkts or 0}
+                        st.session_state.runs = int(new_runs)
+                        st.session_state.wickets = int(new_wkts or 0)
+                        st.session_state.balls = int(new_balls)
+                        st.session_state.last = "Live sync"
+                        st.session_state["live_last_fetch_note"] = (
+                            f"First sync for this innings: {new_runs}/{new_wkts or 0} at "
+                            f"{display_over(new_balls)}."
+                        )
+                    else:
+                        balls_gained = new_balls - prev["balls"]
+                        runs_gained = new_runs - prev["runs"]
+                        if balls_gained == 0:
+                            note = "Already up to date - no new balls since the last fetch."
+                        else:
+                            # True ball-by-ball is not reliably available on
+                            # this plan (see fetch_ball_by_ball) - we do NOT
+                            # invent individual deliveries. Instead the
+                            # actual runs-per-ball since the last fetch is
+                            # recorded as one momentum sample, which is
+                            # honest about what is and isn't known.
+                            avg_per_ball = runs_gained / balls_gained if balls_gained else 0.0
+                            st.session_state.recent_balls = (
+                                list(st.session_state.recent_balls) + [avg_per_ball] * min(balls_gained, 18)
+                            )[-18:]
+                            note = (
+                                f"Synced {balls_gained} ball(s), {runs_gained} run(s) since last fetch "
+                                f"(gap covered as an average rate, not invented ball-by-ball)."
+                            )
+                        ingested[inn_key] = {"balls": new_balls, "runs": new_runs, "wickets": new_wkts or 0}
+                        st.session_state.runs = int(new_runs)
+                        st.session_state.wickets = int(new_wkts or 0)
+                        st.session_state.balls = int(new_balls)
+                        st.session_state.last = "Live sync"
+                        st.session_state["live_last_fetch_note"] = note
 
-                # First innings score becomes the live target, same as  
-                # the manual Target Runs field.  
-                if len(parsed.get("score_list") or []) >= 2:  
-                    try:  
-                        st.session_state.target = int(parsed["score_list"][0].get("r", 0)) + 1  
-                    except (TypeError, ValueError):  
-                        pass  
-            st.rerun()  
+                    # First innings score becomes the live target, same as
+                    # the manual Target Runs field.
+                    if len(parsed.get("score_list") or []) >= 2:
+                        try:
+                            st.session_state.target = int(parsed["score_list"][0].get("r", 0)) + 1
+                        except (TypeError, ValueError):
+                            pass
+                st.rerun()
 
-        live_note = st.session_state.get("live_last_fetch_note")  
-        if live_note:  
-            st.caption(live_note)  
-        with st.expander("Raw live match JSON (for checking field names)", expanded=False):  
-            st.write(st.session_state.get("live_match_raw") or {})  
+            live_note = st.session_state.get("live_last_fetch_note")
+            if live_note:
+                st.caption(live_note)
+            with st.expander("Raw live match JSON (for checking field names)", expanded=False):
+                st.write(st.session_state.get("live_match_raw") or {})
 
-st.markdown("---")  
-st.subheader("Start / Reset")  
-over_points = ["0.0"] + [f"{o}.{k}" for o in range(FULL_OVERS) for k in range(1, 7)] + [f"{FULL_OVERS}.0"]  
-start_over = st.selectbox("Over / Ball now", over_points, index=0, key="start_over_select")  
-start_runs = st.number_input("Runs now", 0, 600, 0, 1, key="start_runs_widget")  
-start_wickets = st.number_input("Wickets now", 0, 10, 0, 1, key="start_wickets_widget")  
-start_last12 = st.number_input("Runs in last 2 overs (-1 = unknown)", -1, 80, -1, 1, key="start_last12_widget")  
-start_bsw = st.number_input("Balls since last wicket (99 = none)", 0, 99, 99, 1, key="start_bsw_widget")  
+    st.markdown("---")
+    st.subheader("Start / Reset")
+    over_points = ["0.0"] + [f"{o}.{k}" for o in range(FULL_OVERS) for k in range(1, 7)] + [f"{FULL_OVERS}.0"]
+    start_over = st.selectbox("Over / Ball now", over_points, index=0, key="start_over_select")
+    start_runs = st.number_input("Runs now", 0, 600, 0, 1, key="start_runs_widget")
+    start_wickets = st.number_input("Wickets now", 0, 10, 0, 1, key="start_wickets_widget")
+    start_last12 = st.number_input("Runs in last 2 overs (-1 = unknown)", -1, 80, -1, 1, key="start_last12_widget")
+    start_bsw = st.number_input("Balls since last wicket (99 = none)", 0, 99, 99, 1, key="start_bsw_widget")
 
-if st.button("Set Current Match Situation", use_container_width=True, key="set_situation_button"):  
-    parsed = over_to_balls(start_over)  
-    if parsed is None:  
-        st.error("Invalid over/ball.")  
-    else:  
-        n_recent = min(12, parsed)  
-        if parsed == 0:  
-            seed = []  
-        elif start_last12 >= 0 and parsed >= 12:  
-            seed = [start_last12 / 12.0] * 12  
-        else:  
-            seed = [start_runs / parsed] * n_recent  
-        st.session_state.runs = int(start_runs)  
-        st.session_state.wickets = int(start_wickets)  
-        st.session_state.balls = int(parsed)  
-        st.session_state.recent_balls = seed  
-        st.session_state.pending_extras = 0.0  
-        st.session_state.bsw = int(start_bsw)  
-        st.session_state.undo_stack = []  
-        st.session_state.last = "Situation set"  
-        st.session_state.on_strike_index = 0  
-        st.session_state.dismissed_batsmen = []  
-        st.session_state.awaiting_new_batsman = False  
-        st.session_state.out_slot_index = None  
-        st.session_state.batter_live = {}  
-        st.session_state.bowler_live = {}  
-        st.session_state.partnership_runs = 0  
-        st.session_state.this_over = []  
-        st.session_state.over_history = []  
-        st.rerun()  
+    if st.button("Set Current Match Situation", use_container_width=True, key="set_situation_button"):
+        parsed = over_to_balls(start_over)
+        if parsed is None:
+            st.error("Invalid over/ball.")
+        else:
+            n_recent = min(12, parsed)
+            if parsed == 0:
+                seed = []
+            elif start_last12 >= 0 and parsed >= 12:
+                seed = [start_last12 / 12.0] * 12
+            else:
+                seed = [start_runs / parsed] * n_recent
+            st.session_state.runs = int(start_runs)
+            st.session_state.wickets = int(start_wickets)
+            st.session_state.balls = int(parsed)
+            st.session_state.recent_balls = seed
+            st.session_state.pending_extras = 0.0
+            st.session_state.bsw = int(start_bsw)
+            st.session_state.undo_stack = []
+            st.session_state.last = "Situation set"
+            st.session_state.on_strike_index = 0
+            st.session_state.dismissed_batsmen = []
+            st.session_state.awaiting_new_batsman = False
+            st.session_state.out_slot_index = None
+            st.session_state.batter_live = {}
+            st.session_state.bowler_live = {}
+            st.session_state.partnership_runs = 0
+            st.session_state.this_over = []
+            st.session_state.over_history = []
+            st.rerun()
 
-if st.button("Reset (new innings)", use_container_width=True, key="reset_live_button"):  
-    for _k in ("runs", "wickets", "balls"):  
-        st.session_state[_k] = 0  
-    st.session_state.recent_balls = []  
-    st.session_state.pending_extras = 0.0  
-    st.session_state.bsw = 99  
-    st.session_state.undo_stack = []  
-    st.session_state.last = "New innings"  
-    st.session_state.on_strike_index = 0  
-    st.session_state.dismissed_batsmen = []  
-    st.session_state.awaiting_new_batsman = False  
-    st.session_state.out_slot_index = None  
-    st.session_state.batter_live = {}  
-    st.session_state.bowler_live = {}  
-    st.session_state.partnership_runs = 0  
-    st.session_state.this_over = []  
-    st.session_state.over_history = []  
-    st.rerun()  
+    if st.button("Reset (new innings)", use_container_width=True, key="reset_live_button"):
+        for _k in ("runs", "wickets", "balls"):
+            st.session_state[_k] = 0
+        st.session_state.recent_balls = []
+        st.session_state.pending_extras = 0.0
+        st.session_state.bsw = 99
+        st.session_state.undo_stack = []
+        st.session_state.last = "New innings"
+        st.session_state.on_strike_index = 0
+        st.session_state.dismissed_batsmen = []
+        st.session_state.awaiting_new_batsman = False
+        st.session_state.out_slot_index = None
+        st.session_state.batter_live = {}
+        st.session_state.bowler_live = {}
+        st.session_state.partnership_runs = 0
+        st.session_state.this_over = []
+        st.session_state.over_history = []
+        st.rerun()
 
-if st.button("Retrain engine from scratch", use_container_width=True, key="retrain_button"):  
-    try:  
-        engine_path_for(league).unlink()  
-    except Exception:  
-        pass  
-    get_engine.clear()  
-    st.rerun()
+    if st.button("Retrain engine from scratch", use_container_width=True, key="retrain_button"):
+        try:
+            engine_path_for(league).unlink()
+        except Exception:
+            pass
+        get_engine.clear()
+        st.rerun()
 
-============================================================
 
-CURRENT STATE
-
-============================================================
+# ============================================================
+# CURRENT STATE
+# ============================================================
 
 runs = int(st.session_state.runs)
 wickets = int(st.session_state.wickets)
@@ -2695,445 +2694,438 @@ last_n = len(recent)
 last_r = float(sum(recent))
 
 BALL_DOT_LABELS = {"Dot": "•", "1": "1", "2": "2", "3": "3", "4": "4", "6": "6",
-"Wicket": "W", "Wide": "wd", "No Ball": "nb"}
+                   "Wicket": "W", "Wide": "wd", "No Ball": "nb"}
+
 
 def _current_batter_key():
-name = on_strike_name if (on_strike_name and on_strike_name != "Not Selected") else None
-return name or f"Batsman {st.session_state.get('on_strike_index', 0) + 1}"
+    name = on_strike_name if (on_strike_name and on_strike_name != "Not Selected") else None
+    return name or f"Batsman {st.session_state.get('on_strike_index', 0) + 1}"
+
 
 def _current_bowler_key():
-return bowler_name if (bowler_name and bowler_name != "Not Selected") else "Current bowler"
+    return bowler_name if (bowler_name and bowler_name != "Not Selected") else "Current bowler"
 
-============================================================
 
-TOP SCORE (the only place the live score is shown) - scoreboard-style
-
-header: score bar, CRR/RRR/target row, ball-by-over dots, current
-
-batsmen and bowler figures. Built entirely from state this app already
-
-tracks live - no extra data source.
-
-============================================================
+# ============================================================
+# TOP SCORE (the only place the live score is shown) - scoreboard-style
+# header: score bar, CRR/RRR/target row, ball-by-over dots, current
+# batsmen and bowler figures. Built entirely from state this app already
+# tracks live - no extra data source.
+# ============================================================
 
 _crr = (runs / (balls / 6.0)) if balls > 0 else 0.0
 _rrr = None
 _need_line = ""
 if innings_no == 2 and target > 0:
-_remaining_balls = max(0, TOTAL_BALLS - balls)
-_remaining_runs = max(0, target - runs)
-if _remaining_balls > 0 and wickets < 10:
-_rrr = _remaining_runs * 6.0 / _remaining_balls
-_need_line = f'<p style="margin:6px 0 0;color:#ffd166">Need {_remaining_runs} runs in {_remaining_balls} balls</p>'
-elif wickets >= 10:
-_need_line = '<p style="margin:6px 0 0;color:#ffd166">All out</p>'
-elif runs >= target:
-_need_line = '<p style="margin:6px 0 0;color:#8fe3a0">Target achieved</p>'
+    _remaining_balls = max(0, TOTAL_BALLS - balls)
+    _remaining_runs = max(0, target - runs)
+    if _remaining_balls > 0 and wickets < 10:
+        _rrr = _remaining_runs * 6.0 / _remaining_balls
+        _need_line = f'<p style="margin:6px 0 0;color:#ffd166">Need {_remaining_runs} runs in {_remaining_balls} balls</p>'
+    elif wickets >= 10:
+        _need_line = '<p style="margin:6px 0 0;color:#ffd166">All out</p>'
+    elif runs >= target:
+        _need_line = '<p style="margin:6px 0 0;color:#8fe3a0">Target achieved</p>'
 
 st.html(
-f"""
-<div class="card">
-<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap">
-<h2 style="margin:0">{batting_team} {runs}/{wickets}</h2>
-<span class="small">{display_over(balls)} / {FULL_OVERS} ov</span>
-</div>
-<p class="small" style="margin:5px 0 0">{league} • {ground or "ground not set"} • vs {bowling_team}</p>
-<div style="display:flex;gap:18px;margin-top:10px;flex-wrap:wrap">
-<div><span class="small">CRR</span><br><b style="font-size:18px">{_crr:.2f}</b></div>
-<div><span class="small">RRR</span><br><b style="font-size:18px">{f'{_rrr:.2f}' if _rrr is not None else '-'}</b></div>
-<div><span class="small">Target</span><br><b style="font-size:18px">{target if target > 0 else '-'}</b></div>
-</div>
-{_need_line}
-</div>
-"""
+    f"""
+    <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap">
+            <h2 style="margin:0">{batting_team} {runs}/{wickets}</h2>
+            <span class="small">{display_over(balls)} / {FULL_OVERS} ov</span>
+        </div>
+        <p class="small" style="margin:5px 0 0">{league} • {ground or "ground not set"} • vs {bowling_team}</p>
+        <div style="display:flex;gap:18px;margin-top:10px;flex-wrap:wrap">
+            <div><span class="small">CRR</span><br><b style="font-size:18px">{_crr:.2f}</b></div>
+            <div><span class="small">RRR</span><br><b style="font-size:18px">{f'{_rrr:.2f}' if _rrr is not None else '-'}</b></div>
+            <div><span class="small">Target</span><br><b style="font-size:18px">{target if target > 0 else '-'}</b></div>
+        </div>
+        {_need_line}
+    </div>
+    """
 )
 
---- Ball-by-over dots (recent overs + the one in progress) ---
-
+# --- Ball-by-over dots (recent overs + the one in progress) ---
 _over_rows = list(st.session_state.get("over_history", []))[-3:]
 _dots_html = ""
 for _row in _over_rows:
-_balls_html = " ".join(f"<span class='dot'>{b}</span>" for b in _row["balls"])
-_dots_html += f"<div class='over-row'><span class='small'>Ov {_row['over']}</span> {_balls_html} <span class='small'>= {_row['runs_after']}</span></div>"
+    _balls_html = " ".join(f"<span class='dot'>{b}</span>" for b in _row["balls"])
+    _dots_html += f"<div class='over-row'><span class='small'>Ov {_row['over']}</span> {_balls_html} <span class='small'>= {_row['runs_after']}</span></div>"
 _this_over_no = balls // 6 + 1
 _this_dots = " ".join(f"<span class='dot'>{b}</span>" for b in st.session_state.get("this_over", []))
 _dots_html += f"<div class='over-row'><b class='small'>Ov {_this_over_no} (current)</b> {_this_dots}</div>"
 
 st.html(
-f"""
-<style>
-.dot {{ display:inline-block; min-width:22px; padding:2px 5px; margin:2px; border-radius:50%;
-background:#12365f; text-align:center; font-size:13px; }}
-.over-row {{ margin:3px 0; }}
-</style>
-<div class="card">{_dots_html}</div>
-"""
+    f"""
+    <style>
+    .dot {{ display:inline-block; min-width:22px; padding:2px 5px; margin:2px; border-radius:50%;
+            background:#12365f; text-align:center; font-size:13px; }}
+    .over-row {{ margin:3px 0; }}
+    </style>
+    <div class="card">{_dots_html}</div>
+    """
 )
 
---- Partnership + current batsmen + bowler ---
-
+# --- Partnership + current batsmen + bowler ---
 _slot_a_name = batsman_a if batsman_a != "Not Selected" else "Batsman 1"
 _slot_b_name = batsman_b if batsman_b != "Not Selected" else "Batsman 2"
 _bat_rows = ""
 for _nm in (_slot_a_name, _slot_b_name):
-st = st.session_state.get("batter_live", {}).get(_nm)
-if st:
-_sr = (st["runs"] / st["balls"] * 100) if st["balls"] else 0.0
-_mark = " *" if _nm == (batsman_a if strike_idx == 0 else batsman_b) else ""
-_bat_rows += (
-f"<tr><td>{_nm}{_mark}</td><td>{st['runs']}</td><td>{st['balls']}</td>"
-f"<td>{st['fours']}</td><td>{st['sixes']}</td><td>{_sr:.1f}</td></tr>"
-)
+    _st_ = st.session_state.get("batter_live", {}).get(_nm)
+    if _st_:
+        _sr = (_st_["runs"] / _st_["balls"] * 100) if _st_["balls"] else 0.0
+        _mark = " *" if _nm == (batsman_a if strike_idx == 0 else batsman_b) else ""
+        _bat_rows += (
+            f"<tr><td>{_nm}{_mark}</td><td>{_st_['runs']}</td><td>{_st_['balls']}</td>"
+            f"<td>{_st_['fours']}</td><td>{_st_['sixes']}</td><td>{_sr:.1f}</td></tr>"
+        )
 _bowl_key = _current_bowler_key()
 _bowl_stats = st.session_state.get("bowler_live", {}).get(_bowl_key)
 _bowl_line = ""
 if _bowl_stats:
-_overs_bowled = display_over(_bowl_stats["balls"])
-_econ = (_bowl_stats["runs"] / (_bowl_stats["balls"] / 6.0)) if _bowl_stats["balls"] else 0.0
-_bowl_line = (
-f"<p style='margin:8px 0 0'><b>{_bowl_key}</b>: {_bowl_stats['wickets']}-{_bowl_stats['runs']} "
-f"({_overs_bowled} ov, econ {_econ:.2f})</p>"
-)
+    _overs_bowled = display_over(_bowl_stats["balls"])
+    _econ = (_bowl_stats["runs"] / (_bowl_stats["balls"] / 6.0)) if _bowl_stats["balls"] else 0.0
+    _bowl_line = (
+        f"<p style='margin:8px 0 0'><b>{_bowl_key}</b>: {_bowl_stats['wickets']}-{_bowl_stats['runs']} "
+        f"({_overs_bowled} ov, econ {_econ:.2f})</p>"
+    )
 
 if _bat_rows:
-st.html(
-f"""
-<div class="card">
-<table style="width:100%;border-collapse:collapse;font-size:14px">
-<tr class="small"><th style="text-align:left">Batter</th><th>R</th><th>B</th>
-<th>4s</th><th>6s</th><th>SR</th></tr>
-{_bat_rows}
-</table>
-<p class="small" style="margin:6px 0 0">Partnership: {st.session_state.get('partnership_runs', 0)} runs</p>
-{_bowl_line}
-</div>
-"""
-)
+    st.html(
+        f"""
+        <div class="card">
+            <table style="width:100%;border-collapse:collapse;font-size:14px">
+                <tr class="small"><th style="text-align:left">Batter</th><th>R</th><th>B</th>
+                    <th>4s</th><th>6s</th><th>SR</th></tr>
+                {_bat_rows}
+            </table>
+            <p class="small" style="margin:6px 0 0">Partnership: {st.session_state.get('partnership_runs', 0)} runs</p>
+            {_bowl_line}
+        </div>
+        """
+    )
 
-============================================================
 
-BALL CONTROLS
-
-============================================================
+# ============================================================
+# BALL CONTROLS
+# ============================================================
 
 def apply_ball(label, add_runs, add_wicket, legal_ball):
-ss = st.session_state
-if label != "Undo" and (ss.wickets >= 10 or ss.balls >= TOTAL_BALLS):
-ss.last = "Innings already complete - use Reset for a new innings"
-return
-if label == "Undo":
-if ss.undo_stack:
-old = ss.undo_stack.pop()
-for k in ("runs", "wickets", "balls", "recent_balls", "pending_extras", "bsw",
-"on_strike_index", "dismissed_batsmen", "awaiting_new_batsman", "out_slot_index",
-"batter_live", "bowler_live", "partnership_runs", "this_over", "over_history"):
-ss[k] = old[k]
-ss.last = "Undo"
-return
-ss.undo_stack.append({
-"runs": ss.runs, "wickets": ss.wickets, "balls": ss.balls,
-"recent_balls": list(ss.recent_balls), "pending_extras": ss.pending_extras, "bsw": ss.bsw,
-"on_strike_index": ss.on_strike_index, "dismissed_batsmen": list(ss.dismissed_batsmen),
-"awaiting_new_batsman": ss.awaiting_new_batsman, "out_slot_index": ss.out_slot_index,
-"batter_live": {k: dict(v) for k, v in ss.batter_live.items()},
-"bowler_live": {k: dict(v) for k, v in ss.bowler_live.items()},
-"partnership_runs": ss.partnership_runs,
-"this_over": list(ss.this_over), "over_history": list(ss.over_history),
-})
-ss.undo_stack = ss.undo_stack[-60:]
-ss.runs += int(add_runs)
-ss.wickets = min(10, ss.wickets + int(add_wicket))
-ss.partnership_runs = 0 if label == "Wicket" else ss.partnership_runs + int(add_runs)
+    ss = st.session_state
+    if label != "Undo" and (ss.wickets >= 10 or ss.balls >= TOTAL_BALLS):
+        ss.last = "Innings already complete - use Reset for a new innings"
+        return
+    if label == "Undo":
+        if ss.undo_stack:
+            old = ss.undo_stack.pop()
+            for k in ("runs", "wickets", "balls", "recent_balls", "pending_extras", "bsw",
+                      "on_strike_index", "dismissed_batsmen", "awaiting_new_batsman", "out_slot_index",
+                      "batter_live", "bowler_live", "partnership_runs", "this_over", "over_history"):
+                ss[k] = old[k]
+            ss.last = "Undo"
+        return
+    ss.undo_stack.append({
+        "runs": ss.runs, "wickets": ss.wickets, "balls": ss.balls,
+        "recent_balls": list(ss.recent_balls), "pending_extras": ss.pending_extras, "bsw": ss.bsw,
+        "on_strike_index": ss.on_strike_index, "dismissed_batsmen": list(ss.dismissed_batsmen),
+        "awaiting_new_batsman": ss.awaiting_new_batsman, "out_slot_index": ss.out_slot_index,
+        "batter_live": {k: dict(v) for k, v in ss.batter_live.items()},
+        "bowler_live": {k: dict(v) for k, v in ss.bowler_live.items()},
+        "partnership_runs": ss.partnership_runs,
+        "this_over": list(ss.this_over), "over_history": list(ss.over_history),
+    })
+    ss.undo_stack = ss.undo_stack[-60:]
+    ss.runs += int(add_runs)
+    ss.wickets = min(10, ss.wickets + int(add_wicket))
+    ss.partnership_runs = 0 if label == "Wicket" else ss.partnership_runs + int(add_runs)
 
-bat_key = _current_batter_key()  
-bowl_key = _current_bowler_key()  
-bat_stats = dict(ss.batter_live.get(bat_key, {"runs": 0, "balls": 0, "fours": 0, "sixes": 0}))  
-bowl_stats = dict(ss.bowler_live.get(bowl_key, {"runs": 0, "balls": 0, "wickets": 0}))  
+    bat_key = _current_batter_key()
+    bowl_key = _current_bowler_key()
+    bat_stats = dict(ss.batter_live.get(bat_key, {"runs": 0, "balls": 0, "fours": 0, "sixes": 0}))
+    bowl_stats = dict(ss.bowler_live.get(bowl_key, {"runs": 0, "balls": 0, "wickets": 0}))
 
-if legal_ball:  
-    ss.recent_balls = (list(ss.recent_balls) + [float(add_runs) + float(ss.pending_extras)])[-18:]  
-    ss.pending_extras = 0.0  
-    ss.balls += 1  
-    ss.bsw = 0 if add_wicket else (min(99, ss.bsw + 1) if ss.bsw < 99 else 99)  
+    if legal_ball:
+        ss.recent_balls = (list(ss.recent_balls) + [float(add_runs) + float(ss.pending_extras)])[-18:]
+        ss.pending_extras = 0.0
+        ss.balls += 1
+        ss.bsw = 0 if add_wicket else (min(99, ss.bsw + 1) if ss.bsw < 99 else 99)
 
-    bat_stats["balls"] += 1  
-    bat_stats["runs"] += int(add_runs)  
-    if add_runs == 4:  
-        bat_stats["fours"] += 1  
-    elif add_runs == 6:  
-        bat_stats["sixes"] += 1  
-    bowl_stats["balls"] += 1  
-    bowl_stats["runs"] += int(add_runs)  
-    if add_wicket:  
-        bowl_stats["wickets"] += 1  
+        bat_stats["balls"] += 1
+        bat_stats["runs"] += int(add_runs)
+        if add_runs == 4:
+            bat_stats["fours"] += 1
+        elif add_runs == 6:
+            bat_stats["sixes"] += 1
+        bowl_stats["balls"] += 1
+        bowl_stats["runs"] += int(add_runs)
+        if add_wicket:
+            bowl_stats["wickets"] += 1
 
-    if label == "Wicket":  
-        ss.awaiting_new_batsman = True  
-        ss.out_slot_index = ss.on_strike_index  
-        if on_strike_name and on_strike_name != "Not Selected":  
-            ss.dismissed_batsmen = list(ss.dismissed_batsmen) + [on_strike_name]  
-    elif int(add_runs) % 2 == 1:  
-        ss.on_strike_index = 1 - ss.on_strike_index  
-    if ss.balls % 6 == 0:  
-        ss.on_strike_index = 1 - ss.on_strike_index  
-else:  
-    ss.pending_extras = float(ss.pending_extras) + float(add_runs)  
-    bowl_stats["runs"] += int(add_runs)  
+        if label == "Wicket":
+            ss.awaiting_new_batsman = True
+            ss.out_slot_index = ss.on_strike_index
+            if on_strike_name and on_strike_name != "Not Selected":
+                ss.dismissed_batsmen = list(ss.dismissed_batsmen) + [on_strike_name]
+        elif int(add_runs) % 2 == 1:
+            ss.on_strike_index = 1 - ss.on_strike_index
+        if ss.balls % 6 == 0:
+            ss.on_strike_index = 1 - ss.on_strike_index
+    else:
+        ss.pending_extras = float(ss.pending_extras) + float(add_runs)
+        bowl_stats["runs"] += int(add_runs)
 
-ss.batter_live = {**ss.batter_live, bat_key: bat_stats}  
-ss.bowler_live = {**ss.bowler_live, bowl_key: bowl_stats}  
+    ss.batter_live = {**ss.batter_live, bat_key: bat_stats}
+    ss.bowler_live = {**ss.bowler_live, bowl_key: bowl_stats}
 
-ss.this_over = list(ss.this_over) + [BALL_DOT_LABELS.get(label, label)]  
-if legal_ball and ss.balls % 6 == 0:  
-    ss.over_history = (list(ss.over_history) + [{  
-        "over": ss.balls // 6, "balls": list(ss.this_over), "runs_after": ss.runs,  
-    }])[-6:]  
-    ss.this_over = []  
+    ss.this_over = list(ss.this_over) + [BALL_DOT_LABELS.get(label, label)]
+    if legal_ball and ss.balls % 6 == 0:
+        ss.over_history = (list(ss.over_history) + [{
+            "over": ss.balls // 6, "balls": list(ss.this_over), "runs_after": ss.runs,
+        }])[-6:]
+        ss.this_over = []
 
-ss.last = label
+    ss.last = label
+
 
 st.subheader("Ball-by-Ball Update")
 actions = [
-("Dot", 0, 0, True), ("1", 1, 0, True), ("2", 2, 0, True), ("3", 3, 0, True),
-("4", 4, 0, True), ("6", 6, 0, True), ("Wicket", 0, 1, True),
-("Wide", 1, 0, False), ("No Ball", 1, 0, False), ("Undo", 0, 0, False),
+    ("Dot", 0, 0, True), ("1", 1, 0, True), ("2", 2, 0, True), ("3", 3, 0, True),
+    ("4", 4, 0, True), ("6", 6, 0, True), ("Wicket", 0, 1, True),
+    ("Wide", 1, 0, False), ("No Ball", 1, 0, False), ("Undo", 0, 0, False),
 ]
 action_columns = st.columns(len(actions), gap="small")
 for _i, (_label, _r, _w, _legal) in enumerate(actions):
-with action_columns[_i]:
-if st.button(label, use_container_width=True, key=f"live_action_button{_i}"):
-apply_ball(_label, _r, _w, _legal)
-st.rerun()
+    with action_columns[_i]:
+        if st.button(_label, use_container_width=True, key=f"live_action_button_{_i}"):
+            apply_ball(_label, _r, _w, _legal)
+            st.rerun()
 
 if st.session_state.get("awaiting_new_batsman"):
-out_slot = st.session_state.get("out_slot_index") or 0
-other_slot_name = batsman_b if out_slot == 0 else batsman_a
-dismissed = set(st.session_state.get("dismissed_batsmen", []))
-incoming_options = ["Not Selected"] + [
-n for n in batting_roster if n not in dismissed and n != other_slot_name]
-incoming = st.selectbox(f"New batsman in (replacing Batsman {out_slot + 1}):",
-incoming_options, key="incoming_batsman_select")
-if st.button("Confirm New Batsman", key="confirm_new_batsman_button"):
-st.session_state["persisted_batsman_a" if out_slot == 0 else "persisted_batsman_b"] = incoming
-st.session_state.awaiting_new_batsman = False
-st.session_state.out_slot_index = None
-st.rerun()
+    out_slot = st.session_state.get("out_slot_index") or 0
+    other_slot_name = batsman_b if out_slot == 0 else batsman_a
+    dismissed = set(st.session_state.get("dismissed_batsmen", []))
+    incoming_options = ["Not Selected"] + [
+        n for n in batting_roster if n not in dismissed and n != other_slot_name]
+    incoming = st.selectbox(f"New batsman in (replacing Batsman {out_slot + 1}):",
+                            incoming_options, key="incoming_batsman_select")
+    if st.button("Confirm New Batsman", key="confirm_new_batsman_button"):
+        st.session_state["persisted_batsman_a" if out_slot == 0 else "persisted_batsman_b"] = incoming
+        st.session_state.awaiting_new_batsman = False
+        st.session_state.out_slot_index = None
+        st.rerun()
 
-============================================================
 
-PROJECTION INPUTS (the only two things typed during the match)
-
-============================================================
+# ============================================================
+# PROJECTION INPUTS (the only two things typed during the match)
+# ============================================================
 
 st.subheader("Projection")
 c1, c2 = st.columns(2, gap="small")
 with c1:
-proj_over = st.number_input("Projection End Over", min_value=1, max_value=FULL_OVERS,
-value=min(int(st.session_state.projection_end_over), FULL_OVERS), step=1,
-key="projection_end_over_widget")
+    proj_over = st.number_input("Projection End Over", min_value=1, max_value=FULL_OVERS,
+                                value=min(int(st.session_state.projection_end_over), FULL_OVERS), step=1,
+                                key="projection_end_over_widget")
 st.session_state.projection_end_over = int(proj_over)
 
 player_info = build_player_info(connection, E, league, striker_name, non_striker_name, bowler_name, balls)
 
 squad_info = None
 if batting_xi or bowling_xi:
-b_nd, b_d, b_conf = squad_batting_strength(
-connection, league, tuple(batting_xi), E["pp_end"], E["death_over"], tuple(E["lg_bat_ball"]))
-w_nd, w_d, w_conf = squad_bowling_strength(
-connection, league, tuple(bowling_xi), E["pp_end"], E["death_over"], tuple(E["lg_bowl_ball"]))
-squad_info = {
-"bat_nd": b_nd, "bat_d": b_d, "bat_conf": b_conf,
-"bowl_nd": w_nd, "bowl_d": w_d, "bowl_conf": w_conf,
-}
+    b_nd, b_d, b_conf = squad_batting_strength(
+        connection, league, tuple(batting_xi), E["pp_end"], E["death_over"], tuple(E["lg_bat_ball"]))
+    w_nd, w_d, w_conf = squad_bowling_strength(
+        connection, league, tuple(bowling_xi), E["pp_end"], E["death_over"], tuple(E["lg_bowl_ball"]))
+    squad_info = {
+        "bat_nd": b_nd, "bat_d": b_d, "bat_conf": b_conf,
+        "bowl_nd": w_nd, "bowl_d": w_d, "bowl_conf": w_conf,
+    }
 
 state = {
-"innings": innings_no, "b": balls, "r": runs, "w": wickets,
-"last_r": last_r, "last_n": last_n, "bsw": int(st.session_state.bsw),
-"window_over": int(proj_over), "line": 0,
-"batting_team": batting_team, "bowling_team": bowling_team, "ground": ground,
-"target": int(target), "pitch_mult": PITCH_CONDITIONS[pitch_choice],
-"dew_level": DEW_OPTIONS[dew_choice], "player": player_info, "squad": squad_info,
+    "innings": innings_no, "b": balls, "r": runs, "w": wickets,
+    "last_r": last_r, "last_n": last_n, "bsw": int(st.session_state.bsw),
+    "window_over": int(proj_over), "line": 0,
+    "batting_team": batting_team, "bowling_team": bowling_team, "ground": ground,
+    "target": int(target), "pitch_mult": PITCH_CONDITIONS[pitch_choice],
+    "dew_level": DEW_OPTIONS[dew_choice], "player": player_info, "squad": squad_info,
 }
 _pre = predict(E, state)
 default_line = int(st.session_state.score_prediction)
 if default_line <= 0:
-default_line = int(round(_pre["window_expected"]))
+    default_line = int(round(_pre["window_expected"]))
 with c2:
-line = st.number_input("Score Prediction (runs)", min_value=0, max_value=700, value=default_line,
-step=1, key="score_prediction_widget")
+    line = st.number_input("Score Prediction (runs)", min_value=0, max_value=700, value=default_line,
+                           step=1, key="score_prediction_widget")
 st.session_state.score_prediction = int(line)
 state["line"] = int(line)
 result = predict(E, state)
 
-============================================================
 
-RESULT BOX 1 - SCORE
-
-============================================================
+# ============================================================
+# RESULT BOX 1 - SCORE
+# ============================================================
 
 p_reach = result["p_reach"] * 100
 box_class = "positive" if p_reach >= 50 else "negative"
 over_label = int(proj_over)
 ahead = runs - result["par_now"]
 st.html(
-f"""
-<div class="{box_class}">
-<h1 style="margin:0">Expected {result['window_expected']:.0f} by over {over_label}</h1>
-<p style="margin:6px 0 0">80% range: <b>{result['window_p10']:.0f} - {result['window_p90']:.0f}</b></p>
-<p style="margin:8px 0 0;font-size:20px">
-{int(line)} or more: <b>{p_reach:.0f}%</b>  • 
-under {int(line)}: <b>{100 - p_reach:.0f}%</b>
-</p>
-<p class="small" style="margin:6px 0 0">
-Full innings projection {result['final_expected']:.0f}
-({result['final_p10']:.0f}-{result['final_p90']:.0f})
-• {ahead:+.0f} runs vs league par at this stage
-</p>
-</div>
-"""
+    f"""
+    <div class="{box_class}">
+        <h1 style="margin:0">Expected {result['window_expected']:.0f} by over {over_label}</h1>
+        <p style="margin:6px 0 0">80% range: <b>{result['window_p10']:.0f} - {result['window_p90']:.0f}</b></p>
+        <p style="margin:8px 0 0;font-size:20px">
+            {int(line)} or more: <b>{p_reach:.0f}%</b> &nbsp;•&nbsp;
+            under {int(line)}: <b>{100 - p_reach:.0f}%</b>
+        </p>
+        <p class="small" style="margin:6px 0 0">
+            Full innings projection {result['final_expected']:.0f}
+            ({result['final_p10']:.0f}-{result['final_p90']:.0f})
+            • {ahead:+.0f} runs vs league par at this stage
+        </p>
+    </div>
+    """
 )
 
-============================================================
 
-RESULT BOX 2 - WIN
-
-============================================================
+# ============================================================
+# RESULT BOX 2 - WIN
+# ============================================================
 
 wp = result["win_prob"]
 if wp is not None:
-bat_win = wp * 100
-bowl_win = 100 - bat_win
-if bat_win >= bowl_win:
-w_name, w_pct, w_class = batting_team, bat_win, "positive"
+    bat_win = wp * 100
+    bowl_win = 100 - bat_win
+    if bat_win >= bowl_win:
+        w_name, w_pct, w_class = batting_team, bat_win, "positive"
+    else:
+        w_name, w_pct, w_class = bowling_team, bowl_win, "negative"
+    basis = ("Based on projected final score vs ground par, team rating, head-to-head"
+             if innings_no == 1 else f"Target {int(target)} • needs {result.get('needed', 0):.0f} more")
+    st.html(
+        f"""
+        <div class="{w_class}">
+            <h1 style="margin:0">{w_name.upper()} WIN - {w_pct:.0f}%</h1>
+            <p style="margin:8px 0 0">
+                {batting_team}: <b>{bat_win:.1f}%</b> &nbsp;•&nbsp; {bowling_team}: <b>{bowl_win:.1f}%</b>
+            </p>
+            <p class="small" style="margin:5px 0 0">{basis}</p>
+        </div>
+        """
+    )
 else:
-w_name, w_pct, w_class = bowling_team, bowl_win, "negative"
-basis = ("Based on projected final score vs ground par, team rating, head-to-head"
-if innings_no == 1 else f"Target {int(target)} • needs {result.get('needed', 0):.0f} more")
-st.html(
-f"""
-<div class="{w_class}">
-<h1 style="margin:0">{w_name.upper()} WIN - {w_pct:.0f}%</h1>
-<p style="margin:8px 0 0">
-{batting_team}: <b>{bat_win:.1f}%</b>  •  {bowling_team}: <b>{bowl_win:.1f}%</b>
-</p>
-<p class="small" style="margin:5px 0 0">{basis}</p>
-</div>
-"""
-)
-else:
-st.info("2nd innings win % ke liye sidebar me Target Runs set karein.")
+    st.info("2nd innings win % ke liye sidebar me Target Runs set karein.")
 
-============================================================
 
-DETAILS
-
-============================================================
+# ============================================================
+# DETAILS
+# ============================================================
 
 with st.expander("More Insights & Details", expanded=False):
-st.write("#### What is moving the projection (runs, rest of innings)")
-st.caption("Positive = adds runs, negative = costs runs, vs a neutral situation. "
-"Each of these is learned from history except pitch/dew and the player nudges, which are bounded judgement values.")
-if result["factors"]:
-df_f = pd.DataFrame(result["factors"], columns=["Factor", "Runs impact"])
-df_f["Runs impact"] = df_f["Runs impact"].round(1)
-st.dataframe(df_f, hide_index=True, use_container_width=True)
+    st.write("#### What is moving the projection (runs, rest of innings)")
+    st.caption("Positive = adds runs, negative = costs runs, vs a neutral situation. "
+               "Each of these is learned from history except pitch/dew and the player nudges, which are bounded judgement values.")
+    if result["factors"]:
+        df_f = pd.DataFrame(result["factors"], columns=["Factor", "Runs impact"])
+        df_f["Runs impact"] = df_f["Runs impact"].round(1)
+        st.dataframe(df_f, hide_index=True, use_container_width=True)
 
-st.write("#### Score path")  
-try:  
-    path_rows = predict_path(E, state)  
-    par_curve = E["par_cum_np"][innings_no]  
-    pts = [(balls / 6.0, float(runs), float(runs), float(runs), float(par_curve[balls]))]  
-    for ov, mid, lo, hi in path_rows:  
-        pts.append((float(ov), float(mid), float(lo), float(hi), float(par_curve[int(ov) * 6])))  
-    chart_df = pd.DataFrame(pts, columns=["Over", "Expected", "Low (10%)", "High (90%)", "League par"]).set_index("Over")  
-    st.line_chart(chart_df)  
-except Exception:  
-    st.info("Path chart unavailable for this situation.")  
+    st.write("#### Score path")
+    try:
+        path_rows = predict_path(E, state)
+        par_curve = E["par_cum_np"][innings_no]
+        pts = [(balls / 6.0, float(runs), float(runs), float(runs), float(par_curve[balls]))]
+        for ov, mid, lo, hi in path_rows:
+            pts.append((float(ov), float(mid), float(lo), float(hi), float(par_curve[int(ov) * 6])))
+        chart_df = pd.DataFrame(pts, columns=["Over", "Expected", "Low (10%)", "High (90%)", "League par"]).set_index("Over")
+        st.line_chart(chart_df)
+    except Exception:
+        st.info("Path chart unavailable for this situation.")
 
-st.write("#### Match context")  
-crr = runs / (balls / 6.0) if balls > 0 else 0.0  
-rrr = None  
-if innings_no == 2 and target > 0 and balls < TOTAL_BALLS:  
-    rrr = max(0, target - runs) * 6.0 / (TOTAL_BALLS - balls)  
-mom = (last_r / last_n * 6.0) if last_n > 0 else None  
-m1, m2, m3 = st.columns(3)  
-m1.metric("Current run rate", f"{crr:.2f}")  
-m2.metric("Required run rate", f"{rrr:.2f}" if rrr is not None else "-")  
-m3.metric("Last 2 overs rate", f"{mom:.2f}" if mom is not None else "-")  
-wa, wb = result["h2h"]  
-if wa + wb:  
-    st.caption(f"Head-to-head (this league): {batting_team} {wa} - {wb} {bowling_team}")  
-gstats = E["ground"].get(ground or "", None)  
-if gstats:  
-    st.caption(  
-        f"Ground record ({ground}, {gstats.get('n', 0)} matches): typical 1st innings "  
-        f"{gstats.get('G1', E['league_first_mean']):.0f}, death-overs scoring "  
-        f"{gstats.get('g_d', 0):+.2f} rpo vs league, boundary rate {gstats.get('g_bnd', 0):+.1f} pts, "  
-        f"bat-first win-rate {gstats.get('gbias', 0) * 100:+.0f} pts vs league.")  
-elif ground:  
-    st.caption(f"'{ground}' has no history in this league - ground effects set to neutral.")  
+    st.write("#### Match context")
+    crr = runs / (balls / 6.0) if balls > 0 else 0.0
+    rrr = None
+    if innings_no == 2 and target > 0 and balls < TOTAL_BALLS:
+        rrr = max(0, target - runs) * 6.0 / (TOTAL_BALLS - balls)
+    mom = (last_r / last_n * 6.0) if last_n > 0 else None
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Current run rate", f"{crr:.2f}")
+    m2.metric("Required run rate", f"{rrr:.2f}" if rrr is not None else "-")
+    m3.metric("Last 2 overs rate", f"{mom:.2f}" if mom is not None else "-")
+    wa, wb = result["h2h"]
+    if wa + wb:
+        st.caption(f"Head-to-head (this league): {batting_team} {wa} - {wb} {bowling_team}")
+    gstats = E["ground"].get(ground or "", None)
+    if gstats:
+        st.caption(
+            f"Ground record ({ground}, {gstats.get('n', 0)} matches): typical 1st innings "
+            f"{gstats.get('G1', E['league_first_mean']):.0f}, death-overs scoring "
+            f"{gstats.get('g_d', 0):+.2f} rpo vs league, boundary rate {gstats.get('g_bnd', 0):+.1f} pts, "
+            f"bat-first win-rate {gstats.get('gbias', 0) * 100:+.0f} pts vs league.")
+    elif ground:
+        st.caption(f"'{ground}' has no history in this league - ground effects set to neutral.")
 
-bat_home, bowl_home = result.get("home", (0.0, 0.0))  
-if ground:  
-    if bat_home:  
-        st.caption(f"🏠 {batting_team} is treated as playing at home here (detected from history, not hand-typed).")  
-    elif bowl_home:  
-        st.caption(f"🏠 {bowling_team} is treated as playing at home here (detected from history, not hand-typed).")  
-    else:  
-        st.caption("No clear home team detected for this ground (or it's a neutral venue).")  
+    bat_home, bowl_home = result.get("home", (0.0, 0.0))
+    if ground:
+        if bat_home:
+            st.caption(f"🏠 {batting_team} is treated as playing at home here (detected from history, not hand-typed).")
+        elif bowl_home:
+            st.caption(f"🏠 {bowling_team} is treated as playing at home here (detected from history, not hand-typed).")
+        else:
+            st.caption("No clear home team detected for this ground (or it's a neutral venue).")
 
-if squad_info:  
-    parts = []  
-    if batting_xi:  
-        parts.append(f"{batting_team} XI trust: {squad_info['bat_conf'] * 100:.0f}% "  
-                    f"(rest comes from the team's season average)")  
-    if bowling_xi:  
-        parts.append(f"{bowling_team} XI trust: {squad_info['bowl_conf'] * 100:.0f}%")  
-    if parts:  
-        st.caption("Playing XI - " + " • ".join(parts) +  
-                  ". Low % usually means most named players are new/unrecognised in this league's data.")  
+    if squad_info:
+        parts = []
+        if batting_xi:
+            parts.append(f"{batting_team} XI trust: {squad_info['bat_conf'] * 100:.0f}% "
+                        f"(rest comes from the team's season average)")
+        if bowling_xi:
+            parts.append(f"{bowling_team} XI trust: {squad_info['bowl_conf'] * 100:.0f}%")
+        if parts:
+            st.caption("Playing XI - " + " • ".join(parts) +
+                      ". Low % usually means most named players are new/unrecognised in this league's data.")
 
 
-if striker_name or non_striker_name or bowler_name:  
-    st.write("#### Players")  
-    ph = phase_of(E, balls // 6)  
-    phase_name = ["Powerplay", "Middle overs", "Death overs"][ph]  
-    for nm in (striker_name, non_striker_name):  
-        if nm:  
-            stt = player_batting_phase(connection, league, nm, E["pp_end"], E["death_over"])  
-            r_, b_ = stt["phase"][ph]  
-            sr = f"{r_ / b_ * 100:.0f}" if b_ else "-"  
-            st.caption(f"{nm}: {phase_name} SR {sr} ({b_} balls in this league)")  
-    if bowler_name:  
-        stt = player_bowling_phase(connection, league, bowler_name, E["pp_end"], E["death_over"])  
-        r_, b_ = stt["phase"][ph]  
-        eco = f"{r_ / b_ * 6:.2f}" if b_ else "-"  
-        st.caption(f"{bowler_name}: {phase_name} economy {eco} ({b_} balls in this league)")  
+    if striker_name or non_striker_name or bowler_name:
+        st.write("#### Players")
+        ph = phase_of(E, balls // 6)
+        phase_name = ["Powerplay", "Middle overs", "Death overs"][ph]
+        for nm in (striker_name, non_striker_name):
+            if nm:
+                stt = player_batting_phase(connection, league, nm, E["pp_end"], E["death_over"])
+                r_, b_ = stt["phase"][ph]
+                sr = f"{r_ / b_ * 100:.0f}" if b_ else "-"
+                st.caption(f"{nm}: {phase_name} SR {sr} ({b_} balls in this league)")
+        if bowler_name:
+            stt = player_bowling_phase(connection, league, bowler_name, E["pp_end"], E["death_over"])
+            r_, b_ = stt["phase"][ph]
+            eco = f"{r_ / b_ * 6:.2f}" if b_ else "-"
+            st.caption(f"{bowler_name}: {phase_name} economy {eco} ({b_} balls in this league)")
 
-st.write("#### Engine report (measured on real history, out-of-sample)")  
-mt = E["metrics"]  
-st.caption(  
-    f"{league}: trained on {mt['n_matches']} full-length matches, seasons "  
-    f"{mt['seasons'][0]}-{mt['seasons'][1]} (cross-fitted by match, so these numbers are honest). "  
-    f"Trained in {E.get('train_seconds', 0)}s.")  
-rep_rows = []  
-for k in ("1", "2"):  
-    for ball_key, vals in mt.get(f"runs_inn{k}", {}).items():  
-        rep_rows.append({"Innings": k, "After over": int(ball_key) // 6, "Samples": vals["n"],  
-                         "Model error (runs)": vals["mae_model"], "Naive pace-projection error": vals["mae_naive"]})  
-if rep_rows:  
-    st.write("Final-score prediction error (lower is better):")  
-    st.dataframe(pd.DataFrame(rep_rows), hide_index=True, use_container_width=True)  
-w1, w2 = mt["w1"], mt["w2"]  
-st.write(  
-    f"Win probability, 1st innings: Brier {w1['brier']} (coin-flip baseline {w1['brier_baseline']}); "  
-    f"2nd innings: Brier {w2['brier']} (baseline {w2['brier_baseline']}). Lower Brier = better.")  
-cal = pd.DataFrame(w2["calibration"], columns=["Predicted", "Actual win rate", "Samples"])  
-st.write("2nd-innings calibration (predicted vs what actually happened):")  
-st.dataframe(cal, hide_index=True, use_container_width=True)  
-st.caption(  
-    "Reading it: when the engine says 70%, teams in that bucket should have won about 70% of the time. "  
-    "Early in a 1st innings the true win chance is close to 50-50 - a 50-50 there is correct, not a bug.")
+    st.write("#### Engine report (measured on real history, out-of-sample)")
+    mt = E["metrics"]
+    st.caption(
+        f"{league}: trained on {mt['n_matches']} full-length matches, seasons "
+        f"{mt['seasons'][0]}-{mt['seasons'][1]} (cross-fitted by match, so these numbers are honest). "
+        f"Trained in {E.get('train_seconds', 0)}s.")
+    rep_rows = []
+    for k in ("1", "2"):
+        for ball_key, vals in mt.get(f"runs_inn{k}", {}).items():
+            rep_rows.append({"Innings": k, "After over": int(ball_key) // 6, "Samples": vals["n"],
+                             "Model error (runs)": vals["mae_model"], "Naive pace-projection error": vals["mae_naive"]})
+    if rep_rows:
+        st.write("Final-score prediction error (lower is better):")
+        st.dataframe(pd.DataFrame(rep_rows), hide_index=True, use_container_width=True)
+    w1, w2 = mt["w1"], mt["w2"]
+    st.write(
+        f"Win probability, 1st innings: Brier {w1['brier']} (coin-flip baseline {w1['brier_baseline']}); "
+        f"2nd innings: Brier {w2['brier']} (baseline {w2['brier_baseline']}). Lower Brier = better.")
+    cal = pd.DataFrame(w2["calibration"], columns=["Predicted", "Actual win rate", "Samples"])
+    st.write("2nd-innings calibration (predicted vs what actually happened):")
+    st.dataframe(cal, hide_index=True, use_container_width=True)
+    st.caption(
+        "Reading it: when the engine says 70%, teams in that bucket should have won about 70% of the time. "
+        "Early in a 1st innings the true win chance is close to 50-50 - a 50-50 there is correct, not a bug.")
+
 
 st.caption("Historical estimate only. Not a guarantee of the live match result.")
 save_persisted_session()
