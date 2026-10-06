@@ -19,6 +19,7 @@
 #     accuracy numbers measured on real history for the selected league.
 
 import bisect
+import datetime
 import hmac
 import json
 import os
@@ -302,14 +303,17 @@ DATABASES = {
     "Men's Big Bash League": BASE / "bbl_history.db",
     "Women's Big Bash League": BASE / "wbbl_history.db",
     "ODI Cricket (International)": BASE / "odi_history.db",
+    "T20 International": BASE / "t20i_history.db",
 }
 
 DOWNLOAD_URLS = {
     "IPL": "https://cricsheet.org/downloads/ipl_json.zip",
     "Men's Big Bash League": "https://cricsheet.org/downloads/bbl_json.zip",
     "Women's Big Bash League": "https://cricsheet.org/downloads/wbb_json.zip",
-    # Direct competition-level archive - all international men's ODIs.
+    # Direct competition-level archives - every international match of
+    # that format, not a franchise league.
     "ODI Cricket (International)": "https://cricsheet.org/downloads/odis_male_json.zip",
+    "T20 International": "https://cricsheet.org/downloads/t20s_male_json.zip",
 }
 
 RESTRICT_TEAMS = {}
@@ -320,7 +324,38 @@ LEAGUE_FORMAT_OVERS = {
     "Men's Big Bash League": 20,
     "Women's Big Bash League": 20,
     "ODI Cricket (International)": 50,
+    "T20 International": 20,
 }
+
+# ------------------------------------------------------------
+# ROLLING 10-YEAR WINDOW (same rule for every format, every league)
+# ------------------------------------------------------------
+# Only matches from the last ROLLING_WINDOW_YEARS full years are ever
+# downloaded/built into any league's database. This is recomputed from
+# TODAY's date, not a hand-typed year - so in 2027 this automatically
+# becomes 2017-2027, in 2030 it becomes 2020-2030, with no code change
+# and no one needing to remember to update a cutoff. Two things this
+# fixes at once:
+#   1. ODI's (and now T20 International's) full Cricsheet archive goes
+#      back to 1971 / 2005 respectively - thousands of matches. Without
+#      a window, building that whole archive on every fresh deploy is
+#      what was hanging/crashing the app. Now every league, regardless
+#      of format, only ever builds its last 10 years.
+#   2. Keeps the model's "current teams" (franchise squads AND national
+#      sides) genuinely current, rather than diluted by a decade-old
+#      roster that no longer reflects who actually plays today.
+# Within this 10-year window, the engine's own recency half-life still
+# weights 2026 more than 2017 etc. (see ENGINE_CFG) - the window sets
+# the OUTER boundary of what's even loaded; the half-life shapes how
+# much each year inside that boundary actually counts.
+ROLLING_WINDOW_YEARS = 10
+
+
+def current_min_season():
+    """Today's year minus the rolling window - recomputed live, never
+    hand-typed, so this slides forward automatically every year."""
+    return datetime.date.today().year - ROLLING_WINDOW_YEARS
+
 
 LEAGUES = list(DATABASES.keys())
 
@@ -332,6 +367,7 @@ LEAGUES = list(DATABASES.keys())
 DEFAULT_ROSTER_LOOKBACK_SEASONS = 2
 LEAGUE_ROSTER_LOOKBACK_SEASONS = {
     "ODI Cricket (International)": 5,
+    "T20 International": 5,
 }
 
 # Manual pitch-behaviour multiplier on the projected remaining runs.
@@ -361,10 +397,11 @@ DEW_OPTIONS = {
 # ELO between-season carry-over, and a cap on how many of the most
 # recent matches are used (keeps training memory small on a tiny server).
 ENGINE_CFG = {
-    "IPL": {"half_life": 4.0, "era_start": 2023, "elo_keep": 0.75, "cap": None},
-    "Men's Big Bash League": {"half_life": 5.0, "era_start": None, "elo_keep": 0.75, "cap": None},
-    "Women's Big Bash League": {"half_life": 5.0, "era_start": None, "elo_keep": 0.75, "cap": None},
+    "IPL": {"half_life": 4.0, "era_start": 2023, "elo_keep": 0.75, "cap": 900},
+    "Men's Big Bash League": {"half_life": 5.0, "era_start": None, "elo_keep": 0.75, "cap": 700},
+    "Women's Big Bash League": {"half_life": 5.0, "era_start": None, "elo_keep": 0.75, "cap": 700},
     "ODI Cricket (International)": {"half_life": 4.0, "era_start": None, "elo_keep": 0.90, "cap": 700},
+    "T20 International": {"half_life": 4.0, "era_start": None, "elo_keep": 0.90, "cap": 700},
 }
 
 # Real, format-specific Powerplay/Death boundaries where they're known
@@ -393,7 +430,7 @@ def get_phase_boundaries(total_overs):
 # BASIC HELPERS
 # ============================================================
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 
 
 def display_over(total_balls):
@@ -432,10 +469,16 @@ def get_table_columns(connection, table_name):
     return {row[1] for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()}
 
 
+REBUILD_AFTER_DAYS = 3
+
+
 def database_is_valid(database_path, league):
-    """Valid = right tables, right columns AND schema_version 3 (the
-    version with correct legal-ball counting). Older databases fail this
-    check on purpose, which triggers one clean rebuild."""
+    """Valid = right tables, right columns, current schema_version, AND
+    built recently enough. The last check is what makes newly completed
+    real matches (and the rolling 10-year window itself) actually flow in
+    over time on any host where the process/disk survives longer than a
+    few days - on hosts that wipe disk on every restart this check never
+    even gets a chance to matter, since the file won't exist at all."""
     if not database_path.exists() or database_path.stat().st_size == 0:
         return False
 
@@ -450,6 +493,16 @@ def database_is_valid(database_path, league):
             "SELECT value FROM meta WHERE key='schema_version'"
         ).fetchone()
         if not version or str(version[0]) != SCHEMA_VERSION:
+            return False
+
+        built_row = connection.execute(
+            "SELECT value FROM meta WHERE key='built_at'"
+        ).fetchone()
+        try:
+            built_at = float(built_row[0]) if built_row else 0.0
+        except (TypeError, ValueError):
+            built_at = 0.0
+        if (time.time() - built_at) > REBUILD_AFTER_DAYS * 86400:
             return False
 
         delivery_columns = get_table_columns(connection, "deliveries")
@@ -503,7 +556,7 @@ def create_indexes(connection):
         connection.execute(statement)
 
 
-def build_database(database_path, league, archive_paths, restrict_teams=None):
+def build_database(database_path, league, archive_paths, restrict_teams=None, min_season=None):
     temporary_path = database_path.with_suffix(".tmp")
     if temporary_path.exists():
         temporary_path.unlink()
@@ -592,6 +645,15 @@ def build_database(database_path, league, archive_paths, restrict_teams=None):
                                 except (ValueError, TypeError):
                                     season_year = None
 
+                        if min_season is not None and (season_year is None or season_year < min_season):
+                            # Skip entirely - before touching any innings/delivery
+                            # data - so an old match costs nothing beyond
+                            # reading its season. This is what keeps a huge
+                            # full archive (e.g. ODIs back to 1971) from
+                            # being built in full every time.
+                            seen_match_ids.discard(match_id)
+                            continue
+
                         match_overs = info.get("overs")
                         try:
                             match_overs = int(match_overs)
@@ -654,6 +716,7 @@ def build_database(database_path, league, archive_paths, restrict_teams=None):
             flush_deliveries()
 
         connection.execute("INSERT OR REPLACE INTO meta VALUES('schema_version', ?)", (SCHEMA_VERSION,))
+        connection.execute("INSERT OR REPLACE INTO meta VALUES('built_at', ?)", (str(time.time()),))
         create_indexes(connection)
         connection.commit()
 
@@ -735,7 +798,8 @@ def ensure_database(league):
                     f"Could not download any source archive for {league}. Failures: {failed_sources}"
                 )
 
-            build_database(building_path, league, archive_paths, restrict_teams=restrict_teams)
+            build_database(building_path, league, archive_paths, restrict_teams=restrict_teams,
+                           min_season=current_min_season())
 
             if is_merge_league and failed_sources:
                 st.session_state.setdefault("league_build_warnings", {})
@@ -803,7 +867,7 @@ import numpy as np
 import pandas as pd
 
 ENGINE_VERSION = 1
-N_FOLDS = 5
+N_FOLDS = 3
 Q_GRID = np.arange(1, 100) / 100.0
 H_BIN_EDGES = [6, 12, 24, 36, 60, 84, 120, 180, 300]
 
@@ -963,7 +1027,7 @@ def make_features(b, r, w, last_r, last_n, bsw, H, T, par_cum, d_start, ctx):
 
 def train_config(T):
     if T <= 130:
-        return 6, [6, 12, 18, 24, 30, 36, 48, 60, 72, 90, 108]
+        return 8, [6, 12, 18, 24, 30, 36, 48, 60, 72, 90, 108]
     return 12, [6, 12, 24, 36, 60, 90, 120, 180, 240]
 
 
@@ -1309,8 +1373,8 @@ def train_engine(db_path, league, T_overs, pp_end, death_over, half_life,
 
     for k in (1, 2):
         idx, Hv = expand(k)
-        if len(idx) > 260000:
-            sub = rng.choice(len(idx), 260000, replace=False)
+        if len(idx) > 130000:
+            sub = rng.choice(len(idx), 130000, replace=False)
             idx, Hv = idx[sub], Hv[sub]
         ii = cp_iid[idx]
         b_ = cp_b[idx]; r_ = cp_r[idx]
@@ -1703,8 +1767,10 @@ def predict(E, s):
     win = results["win"]
     out["window_over"] = win_end // 6 if win_end % 6 == 0 else win_end / 6.0
     out["window_expected"] = r + win["mu"]
-    out["window_p10"] = r + float(np.percentile(win["grid"], 10))
-    out["window_p90"] = r + float(np.percentile(win["grid"], 90))
+    out["window_p10"] = r + float(np.percentile(win["grid"], 25))
+    out["window_p90"] = r + float(np.percentile(win["grid"], 75))
+    out["window_p05"] = r + float(np.percentile(win["grid"], 10))
+    out["window_p95"] = r + float(np.percentile(win["grid"], 90))
     line = float(s.get("line", 0))
     if H_win > 0:
         need = line - r
@@ -1717,8 +1783,10 @@ def predict(E, s):
 
     end = results["end"]
     out["final_expected"] = r + end["mu"]
-    out["final_p10"] = r + float(np.percentile(end["grid"], 10))
-    out["final_p90"] = r + float(np.percentile(end["grid"], 90))
+    out["final_p10"] = r + float(np.percentile(end["grid"], 25))
+    out["final_p90"] = r + float(np.percentile(end["grid"], 75))
+    out["final_p05"] = r + float(np.percentile(end["grid"], 10))
+    out["final_p95"] = r + float(np.percentile(end["grid"], 90))
 
     # ---- win probability ----
     wp = None
@@ -2211,6 +2279,9 @@ def guess_league_for_match(match_type, series_name):
                 return "Women's Big Bash League"
             if "Men's Big Bash League" in LEAGUES:
                 return "Men's Big Bash League"
+        # No franchise-league name in the series title - a plain
+        # international T20 (e.g. "India vs Australia, 3rd T20I").
+        return "T20 International" if "T20 International" in LEAGUES else None
     return None
 
 
@@ -2274,6 +2345,143 @@ def parse_over_ball(overs_value):
         return None
 
 
+def sync_live_score_from_detail(detail):
+    """Single source of truth for pulling a fetched match detail into
+    VasuDev's live state (runs/wickets/balls/recent_balls/target). Used
+    both right after 'Load Selected Match' (so the first load already has
+    the live score, not just teams/ground) and by 'FETCH LIVE UPDATE' for
+    every subsequent refresh. Returns a human-readable note."""
+    st.session_state["live_match_raw"] = detail
+    parsed = parse_live_match(detail)
+    new_balls = parse_over_ball(parsed.get("overs"))
+    new_runs = parsed.get("runs")
+    new_wkts = parsed.get("wickets")
+
+    if new_balls is None or new_runs is None:
+        note = "Live API didn't return a usable current score for this match right now."
+        st.session_state["live_last_fetch_note"] = note
+        return note
+
+    inn_key = f"{st.session_state.get('live_selected_id')}|{parsed.get('innings_label')}"
+    ingested = st.session_state.setdefault("live_ingested_keys", {})
+    prev = ingested.get(inn_key)
+
+    if prev and new_balls < prev["balls"]:
+        # Ball count went backwards - a new innings started.
+        st.session_state.recent_balls = []
+        note = f"Synced fresh innings: {new_runs}/{new_wkts or 0} at {display_over(new_balls)}."
+    elif not prev:
+        st.session_state.recent_balls = []
+        note = f"First sync for this innings: {new_runs}/{new_wkts or 0} at {display_over(new_balls)}."
+    else:
+        balls_gained = new_balls - prev["balls"]
+        runs_gained = new_runs - prev["runs"]
+        if balls_gained == 0:
+            note = "Already up to date - no new balls since the last fetch."
+        else:
+            # Try the provider's real ball-by-ball for this gap first -
+            # only falls back to an averaged rate if that endpoint isn't
+            # available on this plan, never invents deliveries either way.
+            bbb_raw, _bbb_err = fetch_ball_by_ball(st.session_state.get("live_selected_id"))
+            deliveries = parse_ball_by_ball_deliveries(bbb_raw) if bbb_raw else []
+            gap_deliveries = [
+                d["runs"] for d in deliveries
+                if d["legal"] and d["ball_pos"] is not None and prev["balls"] < d["ball_pos"] <= new_balls
+            ]
+            if len(gap_deliveries) >= balls_gained:
+                st.session_state.recent_balls = (
+                    list(st.session_state.recent_balls) + [float(r) for r in gap_deliveries[-balls_gained:]]
+                )[-18:]
+                note = (
+                    f"Synced {balls_gained} ball(s), {runs_gained} run(s) using the provider's "
+                    f"actual ball-by-ball for this gap."
+                )
+            else:
+                avg_per_ball = runs_gained / balls_gained if balls_gained else 0.0
+                st.session_state.recent_balls = (
+                    list(st.session_state.recent_balls) + [avg_per_ball] * min(balls_gained, 18)
+                )[-18:]
+                note = (
+                    f"Synced {balls_gained} ball(s), {runs_gained} run(s) since last fetch "
+                    f"(ball-by-ball not available for this gap - covered as an average rate, "
+                    f"not invented deliveries)."
+                )
+
+    ingested[inn_key] = {"balls": new_balls, "runs": new_runs, "wickets": new_wkts or 0}
+    st.session_state.runs = int(new_runs)
+    st.session_state.wickets = int(new_wkts or 0)
+    st.session_state.balls = int(new_balls)
+    st.session_state.last = "Live sync"
+
+    if len(parsed.get("score_list") or []) >= 2:
+        try:
+            st.session_state.target = int(parsed["score_list"][0].get("r", 0)) + 1
+        except (TypeError, ValueError):
+            pass
+
+    st.session_state["live_last_fetch_note"] = note
+    return note
+
+
+def parse_ball_by_ball_deliveries(bbb_raw):
+    """Flatten a ball-by-ball payload into an ordered list of
+    {ball_pos, runs, is_wicket, legal} dicts, trying a few plausible
+    provider shapes defensively. Returns [] (not an error) if nothing
+    recognisable is found - the caller then falls back to the cumulative
+    score + averaged-gap sync rather than guessing further."""
+    if not isinstance(bbb_raw, dict):
+        return []
+
+    raw_overs = None
+    for key in ("overs", "over", "ballByBall", "data"):
+        value = bbb_raw.get(key)
+        if isinstance(value, list) and value:
+            raw_overs = value
+            break
+    if raw_overs is None:
+        return []
+
+    out = []
+    for over_block in raw_overs:
+        if not isinstance(over_block, dict):
+            continue
+        over_no = over_block.get("over")
+        if over_no is None:
+            over_no = over_block.get("overNumber")
+        deliveries = over_block.get("balls") or over_block.get("deliveries") or []
+        if not isinstance(deliveries, list):
+            continue
+        for i, ball in enumerate(deliveries, start=1):
+            if not isinstance(ball, dict):
+                continue
+            runs = ball.get("runs")
+            if runs is None:
+                runs = ball.get("r", 0)
+            try:
+                runs = int(runs)
+            except (TypeError, ValueError):
+                runs = 0
+            extra_type = str(ball.get("type") or ball.get("extraType") or "").lower()
+            is_legal = extra_type not in ("wide", "wd", "noball", "nb", "no ball")
+            is_wicket = bool(ball.get("wicket") or ball.get("isWicket") or ball.get("out"))
+            try:
+                ball_no = int(ball.get("ball", i))
+            except (TypeError, ValueError):
+                ball_no = i
+            try:
+                ov = int(over_no)
+            except (TypeError, ValueError):
+                continue
+            out.append({
+                "ball_pos": ov * 6 + ball_no if is_legal else None,
+                "runs": runs, "is_wicket": is_wicket, "legal": is_legal,
+                "sort_key": (ov, i),
+            })
+
+    out.sort(key=lambda d: d["sort_key"])
+    return out
+
+
 # ------------------------------------------------------------
 # SIDEBAR - STAGE A: pick a live match (before the league's own
 # team/ground lists are available, since a league hasn't been resolved
@@ -2325,17 +2533,23 @@ if live_mode_on:
                 if st.button("📥 Load Selected Match", use_container_width=True, key="load_live_match_button"):
                     chosen = live_matches[chosen_idx]
                     st.session_state["live_selected_id"] = chosen.get("id")
+                    # Fresh match: forget any previous innings' ingested
+                    # checkpoint so the first sync below is treated as new.
+                    st.session_state["live_ingested_keys"] = {}
                     detail, error = fetch_match_details(chosen.get("id"))
                     if error:
                         st.session_state["live_last_fetch_note"] = error
                     else:
-                        st.session_state["live_match_raw"] = detail
                         st.session_state["live_applied_league_for"] = None  # trigger Stage B mapping
+                        st.session_state["live_applied_xi_for"] = None  # trigger Playing XI mapping
                         guessed_league = guess_league_for_match(
                             detail.get("matchType"), detail.get("series") or detail.get("name"))
                         if guessed_league:
                             st.session_state["persisted_league"] = guessed_league
-                        st.session_state["live_last_fetch_note"] = "Match loaded - resolving teams/ground below."
+                        score_note = sync_live_score_from_detail(detail)
+                        st.session_state["live_last_fetch_note"] = (
+                            f"Match loaded. {score_note} Teams/ground/Playing XI resolving below."
+                        )
                     st.rerun()
             elif os.environ.get("CRICKET_API_KEY", "").strip():
                 st.caption("Tap 'Refresh Match List' to see today's live matches.")
@@ -2530,76 +2744,7 @@ with st.sidebar:
                 if error:
                     st.session_state["live_last_fetch_note"] = error
                 else:
-                    st.session_state["live_match_raw"] = detail
-                    parsed = parse_live_match(detail)
-                    new_balls = parse_over_ball(parsed.get("overs"))
-                    new_runs = parsed.get("runs")
-                    new_wkts = parsed.get("wickets")
-                    inn_key = f"{st.session_state['live_selected_id']}|{parsed.get('innings_label')}"
-                    ingested = st.session_state.setdefault("live_ingested_keys", {})
-                    prev = ingested.get(inn_key)
-
-                    if new_balls is None or new_runs is None:
-                        st.session_state["live_last_fetch_note"] = (
-                            "Live API didn't return a usable current score for this match right now."
-                        )
-                    elif prev and new_balls < prev["balls"]:
-                        # A NEW innings started (ball count went backwards) -
-                        # treat as fresh rather than corrupting the old one.
-                        ingested[inn_key] = {"balls": new_balls, "runs": new_runs, "wickets": new_wkts or 0}
-                        st.session_state.runs = int(new_runs)
-                        st.session_state.wickets = int(new_wkts or 0)
-                        st.session_state.balls = int(new_balls)
-                        st.session_state.recent_balls = []
-                        st.session_state.last = "Live sync (new innings)"
-                        st.session_state["live_last_fetch_note"] = (
-                            f"Synced fresh innings: {new_runs}/{new_wkts or 0} at "
-                            f"{display_over(new_balls)}."
-                        )
-                    elif not prev:
-                        ingested[inn_key] = {"balls": new_balls, "runs": new_runs, "wickets": new_wkts or 0}
-                        st.session_state.runs = int(new_runs)
-                        st.session_state.wickets = int(new_wkts or 0)
-                        st.session_state.balls = int(new_balls)
-                        st.session_state.last = "Live sync"
-                        st.session_state["live_last_fetch_note"] = (
-                            f"First sync for this innings: {new_runs}/{new_wkts or 0} at "
-                            f"{display_over(new_balls)}."
-                        )
-                    else:
-                        balls_gained = new_balls - prev["balls"]
-                        runs_gained = new_runs - prev["runs"]
-                        if balls_gained == 0:
-                            note = "Already up to date - no new balls since the last fetch."
-                        else:
-                            # True ball-by-ball is not reliably available on
-                            # this plan (see fetch_ball_by_ball) - we do NOT
-                            # invent individual deliveries. Instead the
-                            # actual runs-per-ball since the last fetch is
-                            # recorded as one momentum sample, which is
-                            # honest about what is and isn't known.
-                            avg_per_ball = runs_gained / balls_gained if balls_gained else 0.0
-                            st.session_state.recent_balls = (
-                                list(st.session_state.recent_balls) + [avg_per_ball] * min(balls_gained, 18)
-                            )[-18:]
-                            note = (
-                                f"Synced {balls_gained} ball(s), {runs_gained} run(s) since last fetch "
-                                f"(gap covered as an average rate, not invented ball-by-ball)."
-                            )
-                        ingested[inn_key] = {"balls": new_balls, "runs": new_runs, "wickets": new_wkts or 0}
-                        st.session_state.runs = int(new_runs)
-                        st.session_state.wickets = int(new_wkts or 0)
-                        st.session_state.balls = int(new_balls)
-                        st.session_state.last = "Live sync"
-                        st.session_state["live_last_fetch_note"] = note
-
-                    # First innings score becomes the live target, same as
-                    # the manual Target Runs field.
-                    if len(parsed.get("score_list") or []) >= 2:
-                        try:
-                            st.session_state.target = int(parsed["score_list"][0].get("r", 0)) + 1
-                        except (TypeError, ValueError):
-                            pass
+                    sync_live_score_from_detail(detail)
                 st.rerun()
 
             live_note = st.session_state.get("live_last_fetch_note")
@@ -2614,8 +2759,17 @@ with st.sidebar:
     start_over = st.selectbox("Over / Ball now", over_points, index=0, key="start_over_select")
     start_runs = st.number_input("Runs now", 0, 600, 0, 1, key="start_runs_widget")
     start_wickets = st.number_input("Wickets now", 0, 10, 0, 1, key="start_wickets_widget")
-    start_last12 = st.number_input("Runs in last 2 overs (-1 = unknown)", -1, 80, -1, 1, key="start_last12_widget")
-    start_bsw = st.number_input("Balls since last wicket (99 = none)", 0, 99, 99, 1, key="start_bsw_widget")
+    start_last12 = st.number_input(
+        "Runs in last 2 overs (optional)", -1, 80, -1, 1, key="start_last12_widget",
+        help="Only if you're starting mid-match and know the recent run-rate - "
+             "e.g. 24 if the last 2 overs went for 24. Leave at -1 if you don't know; "
+             "that's completely fine, it just skips this signal.",
+    )
+    start_bsw = st.number_input(
+        "Balls since last wicket (optional)", 0, 99, 99, 1, key="start_bsw_widget",
+        help="How many balls ago the last wicket fell, if you're starting mid-match. "
+             "Leave at 99 (= no recent wicket) if you don't know or none has fallen.",
+    )
 
     if st.button("Set Current Match Situation", use_container_width=True, key="set_situation_button"):
         parsed = over_to_balls(start_over)
@@ -2667,6 +2821,11 @@ with st.sidebar:
         st.session_state.over_history = []
         st.rerun()
 
+    st.caption(
+        "Retrain below throws away the saved model for this league and rebuilds it from the "
+        "database again. You will not normally need this - only if you suspect something is "
+        "stale after a database rebuild."
+    )
     if st.button("Retrain engine from scratch", use_container_width=True, key="retrain_button"):
         try:
             engine_path_for(league).unlink()
@@ -2972,7 +3131,7 @@ st.html(
     f"""
     <div class="{box_class}">
         <h1 style="margin:0">Expected {result['window_expected']:.0f} by over {over_label}</h1>
-        <p style="margin:6px 0 0">80% range: <b>{result['window_p10']:.0f} - {result['window_p90']:.0f}</b></p>
+        <p style="margin:6px 0 0">Likely range: <b>{result['window_p10']:.0f} - {result['window_p90']:.0f}</b></p>
         <p style="margin:8px 0 0;font-size:20px">
             {int(line)} or more: <b>{p_reach:.0f}%</b> &nbsp;•&nbsp;
             under {int(line)}: <b>{100 - p_reach:.0f}%</b>
@@ -2984,6 +3143,13 @@ st.html(
         </p>
     </div>
     """
+)
+st.caption(
+    f"'Likely range' is the middle 50% of outcomes (25th-75th percentile) - tighter and more "
+    f"decisive than the full spread. The wider 10-90 range "
+    f"({result['window_p05']:.0f}-{result['window_p95']:.0f}) is in 'More Insights & Details' below "
+    f"for anyone who wants the fuller picture - cricket genuinely has this much ball-to-ball variance; "
+    f"showing a fake single number would just hide it, not remove it."
 )
 
 
@@ -3021,6 +3187,11 @@ else:
 # ============================================================
 
 with st.expander("More Insights & Details", expanded=False):
+    st.caption(
+        f"Fuller 10-90 range by over {over_label}: "
+        f"{result['window_p05']:.0f} - {result['window_p95']:.0f} runs. "
+        f"Full innings 10-90 range: {result['final_p05']:.0f} - {result['final_p95']:.0f} runs."
+    )
     st.write("#### What is moving the projection (runs, rest of innings)")
     st.caption("Positive = adds runs, negative = costs runs, vs a neutral situation. "
                "Each of these is learned from history except pitch/dew and the player nudges, which are bounded judgement values.")
