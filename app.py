@@ -2417,7 +2417,123 @@ def matchup_stats(_connection, league, batter, bowler, ref_ord, hl_days):
     for match_date, runs, balls, dismissed in rows:
         wgt = _recency(match_date, ref_ord, hl_days)
         wr += wgt * int(runs or 0); wb += wgt * int(balls or 0)
-        raw_balls += int(b# VasuDev Cricket AI - ENGINE v2          (PART 2 of 2)
+                raw_balls += int(balls or 0); outs += int(dismissed or 0)
+    return (wr, wb, raw_balls, outs)
+
+
+@st.cache_data(show_spinner=False)
+def squad_batting_strength(_connection, league, names, pp_end, death_over, lg_bat_ball, ref_ord, hl_days):
+    """Average, shrunk, phase-split batting strength of a named XI, in the
+    SAME units as the team-level bat_nd/bat_d features (runs/over vs
+    league), recency weighted. Confidence (0-1) reflects how much real ball
+    data backs the named players - an unknown name contributes nothing, so
+    an XI of mostly-unknown names safely falls back to the team average."""
+    if not names:
+        return 0.0, 0.0, 0.0
+    l_nd = (lg_bat_ball[0] + lg_bat_ball[1]) / 2.0
+    l_d = lg_bat_ball[2]
+    nd_vals, d_vals, confs = [], [], []
+    for name in names:
+        stats = player_batting_phase(_connection, league, name, pp_end, death_over, ref_ord, hl_days)
+        ph, raw = stats["phase"], stats["raw"]
+        nd_runs, nd_balls = ph[0][0] + ph[1][0], ph[0][1] + ph[1][1]
+        d_runs, d_balls = ph[2]
+        nd_vals.append((nd_runs + 150.0 * l_nd) / (nd_balls + 150.0))
+        d_vals.append((d_runs + 40.0 * l_d) / (d_balls + 40.0))
+        confs.append(min(1.0, (raw[0][1] + raw[1][1] + raw[2][1]) / 220.0))
+    conf = sum(confs) / len(confs)
+    return (sum(nd_vals) / len(nd_vals) - l_nd) * 6.0, (sum(d_vals) / len(d_vals) - l_d) * 6.0, conf
+
+
+@st.cache_data(show_spinner=False)
+def squad_bowling_strength(_connection, league, names, pp_end, death_over, lg_bowl_ball, ref_ord, hl_days):
+    if not names:
+        return 0.0, 0.0, 0.0
+    l_nd = (lg_bowl_ball[0] + lg_bowl_ball[1]) / 2.0
+    l_d = lg_bowl_ball[2]
+    nd_vals, d_vals, confs = [], [], []
+    for name in names:
+        stats = player_bowling_phase(_connection, league, name, pp_end, death_over, ref_ord, hl_days)
+        ph, raw = stats["phase"], stats["raw"]
+        nd_runs, nd_balls = ph[0][0] + ph[1][0], ph[0][1] + ph[1][1]
+        d_runs, d_balls = ph[2]
+        nd_vals.append((nd_runs + 150.0 * l_nd) / (nd_balls + 150.0))
+        d_vals.append((d_runs + 40.0 * l_d) / (d_balls + 40.0))
+        confs.append(min(1.0, (raw[0][1] + raw[1][1] + raw[2][1]) / 220.0))
+    conf = sum(confs) / len(confs)
+    return (sum(nd_vals) / len(nd_vals) - l_nd) * 6.0, (sum(d_vals) / len(d_vals) - l_d) * 6.0, conf
+
+
+def build_player_info(connection, E, league, striker, non_striker, bowler, b):
+    """Turns the selected players into the phase-specific numbers the
+    engine's bounded player adjustment needs (recency weighted). Manual /
+    unknown names have no history, so they come out neutral (zero balls)."""
+    if not (striker or non_striker or bowler):
+        return None
+    ph = phase_of(E, b // 6)
+    pp, dv = E["pp_end"], E["death_over"]
+    ref, hl = E["latest_ord"], E["team_hl_days"]
+    bat = []
+    for weight, name in ((0.6, striker), (0.4, non_striker)):
+        if name:
+            stats = player_batting_phase(connection, league, name, pp, dv, ref, hl)
+            bat.append((weight, *stats["phase"][ph]))
+    bowl = None
+    match = []
+    if bowler:
+        stats = player_bowling_phase(connection, league, bowler, pp, dv, ref, hl)
+        bowl = stats["phase"][ph]
+        for weight, name in ((0.6, striker), (0.4, non_striker)):
+            if name:
+                runs, balls, _raw, _outs = matchup_stats(connection, league, name, bowler, ref, hl)
+                match.append((weight, runs, balls))
+    return {"bat": bat or None, "bowl": bowl, "match": match or None}
+
+
+@st.cache_data(show_spinner=False)
+def data_freshness(_connection, league, db_sig):
+    """What the database actually contains right now (so you can SEE that
+    the latest matches - e.g. the Spring Challenge - made it in)."""
+    total, last_date, n_extra = _connection.execute(
+        "SELECT COUNT(*), MAX(match_date), SUM(CASE WHEN comp='extra' THEN 1 ELSE 0 END) "
+        "FROM matches WHERE league=?", (league,)).fetchone()
+    last_extra = _connection.execute(
+        "SELECT MAX(match_date) FROM matches WHERE league=? AND comp='extra'", (league,)).fetchone()[0]
+    recent = _connection.execute(
+        "SELECT COUNT(*) FROM matches WHERE league=? AND match_date >= date('now','-30 day')",
+        (league,)).fetchone()[0]
+    return {"total": int(total or 0), "last_date": last_date or "-", "extra": int(n_extra or 0),
+            "last_extra": last_extra or "-", "last30": int(recent or 0)}
+
+
+# ============================================================
+# ENGINE LOADER (trains once per league, then reads a small JSON)
+# ============================================================
+
+@st.cache_resource(show_spinner=False)
+def get_engine(league, db_signature):
+    path = engine_path_for(league)
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text())
+            if raw.get("version") == ENGINE_VERSION and raw.get("db_sig") == db_signature:
+                return prepare_engine(raw)
+        except Exception:
+            pass
+    cfg = ENGINE_CFG[league]
+    t_overs = LEAGUE_FORMAT_OVERS[league]
+    pp, dv = get_phase_boundaries(t_overs)
+    raw = train_engine(
+        str(DATABASES[league].resolve()), league, t_overs, pp, dv,
+        cfg["half_life"], cfg["era_start"], cfg["elo_keep"], cfg["cap"], log=lambda *_: None,
+    )
+    raw["db_sig"] = db_signature
+    try:
+        path.write_text(json.dumps(raw))
+    except Exception:
+        pass
+    return prepare_engine(raw)
+# VasuDev Cricket AI - ENGINE v2          (PART 2 of 2)
 # Paste this file RIGHT BELOW Part 1 (same app.py). Part 1 + Part 2 = the complete app.
 
 
