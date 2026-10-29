@@ -2414,7 +2414,7 @@ def matchup_stats(_connection, league, batter, bowler, ref_ord, hl_days):
         (league, batter, bowler)).fetchall()
     wr = wb = 0.0
     raw_balls = outs = 0
-    for match_date, runs, balls, dismissed in rows:
+        for match_date, runs, balls, dismissed in rows:
         wgt = _recency(match_date, ref_ord, hl_days)
         wr += wgt * int(runs or 0); wb += wgt * int(balls or 0)
         raw_balls += int(balls or 0); outs += int(dismissed or 0)
