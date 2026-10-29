@@ -1,3 +1,4 @@
+# ===== PART 1 of 4 - START =====
 # VasuDev Cricket AI - "ENGINE v2" app.py        (PART 1 of 2 - paste Part 2 right below this)
 #
 # What is new vs ENGINE v1 (everything else is the original base, unchanged):
@@ -1211,8 +1212,9 @@ def make_features(b, r, w, last_r, last_n, bsw, H, T, par_cum, d_start, ctx):
         He / 6.0,
     ]
     return np.column_stack([np.broadcast_to(c, b.shape).astype(np.float64) for c in cols])
+# ===== END OF PART 1 of 4 =====
 
-
+# ===== PART 2 of 4 - START =====
 def train_config(T):
     """Checkpoint spacing (balls) and the horizons (balls) trained on."""
     return 8, [6, 12, 18, 24, 30, 36, 48, 60, 72, 90, 108]
@@ -2348,8 +2350,9 @@ def get_team_roster(_connection, league, team, role):
         f"SELECT DISTINCT {column} FROM deliveries WHERE league=? AND {team_column}=? "
         f"AND {column}<>'' ORDER BY {column}", (league, team)).fetchall()
     return [str(r[0]).strip() for r in rows]
+# ===== END OF PART 2 of 4 =====
 
-
+# ===== PART 3 of 4 - START =====
 def _recency(date_text, ref_ord, hl_days):
     """0.5 ** (age_in_days / half_life_days) for a match date (ISO text)."""
     try:
@@ -2414,7 +2417,7 @@ def matchup_stats(_connection, league, batter, bowler, ref_ord, hl_days):
         (league, batter, bowler)).fetchall()
     wr = wb = 0.0
     raw_balls = outs = 0
-        for match_date, runs, balls, dismissed in rows:
+    for match_date, runs, balls, dismissed in rows:
         wgt = _recency(match_date, ref_ord, hl_days)
         wr += wgt * int(runs or 0); wb += wgt * int(balls or 0)
         raw_balls += int(balls or 0); outs += int(dismissed or 0)
@@ -3490,8 +3493,9 @@ def apply_live_xi_and_toss(batting_team, bowling_team, batting_roster, bowling_r
     else:
         status["Toss"] = ["missing", "API has no toss info yet - choose it manually"]
     ss["live_status"] = status
+# ===== END OF PART 3 of 4 =====
 
-
+# ===== PART 4 of 4 - START =====
 def apply_live_players(batting_roster, bowling_roster):
     """BEFORE the Batsman 1/2 and Current Bowler widgets are drawn: put the
     scorecard's not-out batters and the bowler of the over into them."""
@@ -4545,3 +4549,4 @@ with st.expander("More Insights & Details", expanded=False):
 
 st.caption("Historical estimate only. Not a guarantee of the live match result.")
 save_persisted_session()
+# ===== END OF PART 4 of 4 =====
