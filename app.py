@@ -1,5 +1,18 @@
 # ===== PART 1 of 4 - START =====
-# VasuDev Cricket AI - "ENGINE v2" app.py        (PART 1 of 2 - paste Part 2 right below this)
+# VasuDev Cricket AI - "ENGINE v3" app.py
+#
+# ENGINE v3 (this version) adds, on top of v2:
+#   * MEMORY LENGTH BY OUT-OF-TIME TEST: instead of a guessed half-life, the
+#     engine tries several and keeps the one that predicts the NEXT matches'
+#     scoring level best (per league, on real history).
+#   * SCORING-LEVEL TREND: a learned "this league scores more/less every
+#     year" term, evaluated at today's level (stale par = under-prediction).
+#   * SELF-TEST ON THE MOST RECENT MATCHES: the engine is trained without
+#     the latest matches, then predicts them; bias / error / Brier are shown
+#     in the Engine report (so a bias like "10 runs too low" is visible).
+#   * Playing XI / batters can be ANY player of the league (not only the
+#     team's last 2 seasons) + a box for names that are not in the data.
+#   * Match picker shows ONLY IPL / BBL / WBBL / T20I (the rest is hidden).
 #
 # What is new vs ENGINE v1 (everything else is the original base, unchanged):
 #   * RECENCY BY MATCH DATE: every match is weighted by its real date
@@ -433,6 +446,16 @@ H2H_VENUE_K = 4.0
 MC_BLEND = 0.4
 MC_PATHS = 1200
 
+# Memory-length candidates (years) tried by the out-of-time test, plus the
+# configured value. The configured value is kept unless another one is
+# clearly better (HL_MIN_GAIN = 2% lower error).
+HALF_LIFE_CANDIDATES = (1.5, 2.5, 4.0, 6.0, 9.0)
+HL_MIN_GAIN = 0.02
+
+# Self-test on the most recent matches: how many of the latest matches.
+HOLDOUT_MIN = 30
+HOLDOUT_MAX = 80
+
 # Gradient boosting (pure numpy histogram trees) on top of the ridge
 # regression. It is only switched on for an innings if it lowers the
 # out-of-sample squared error by at least GB_MIN_GAIN (1%).
@@ -504,7 +527,7 @@ def get_table_columns(connection, table_name):
     return {row[1] for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()}
 
 
-REBUILD_AFTER_DAYS = 3
+REBUILD_AFTER_DAYS = 1      # fresh Cricsheet data (new matches) at the first start of each day
 
 
 def database_is_valid(database_path, league):
@@ -943,9 +966,10 @@ def engine_path_for(league):
 #  mean. Everything is cross-fitted by match (3 folds) so the reported
 #  Brier / MAE numbers are out-of-sample.
 
+import gc
 import math
 
-ENGINE_VERSION = 2
+ENGINE_VERSION = 3
 N_FOLDS = 3
 Q_GRID = np.arange(1, 100) / 100.0
 H_BIN_EDGES = [6, 12, 24, 36, 60, 84, 120]
@@ -955,7 +979,7 @@ FEATURE_NAMES = [
     "par", "pace", "mom", "wk", "wk_late", "newbat",
     "g_nd", "g_d", "g_bnd",
     "bat_nd", "bowl_nd", "bat_d", "bowl_d",
-    "elo", "era", "rate",
+    "elo", "era", "trend", "rate",
 ]
 
 FEATURE_GROUPS = {
@@ -1209,12 +1233,12 @@ def make_features(b, r, w, last_r, last_n, bsw, H, T, par_cum, d_start, ctx):
         ctx["bowl_d"] * d_h / 6.0,
         ctx["elo"] / 100.0 * He / 6.0,
         ctx["era"] * He / 6.0,
+        ctx["trend"] * He / 6.0,
         He / 6.0,
     ]
     return np.column_stack([np.broadcast_to(c, b.shape).astype(np.float64) for c in cols])
-# ===== END OF PART 1 of 4 =====
 
-# ===== PART 2 of 4 - START =====
+
 def train_config(T):
     """Checkpoint spacing (balls) and the horizons (balls) trained on."""
     return 8, [6, 12, 18, 24, 30, 36, 48, 60, 72, 90, 108]
@@ -1234,12 +1258,53 @@ def _loo(df, key, num, den, L, K, wcol="w"):
 
 
 # ------------------------------------------------------------
-# training
+# memory length chosen by an out-of-time test
 # ------------------------------------------------------------
 
+def _auto_half_life(day_no, totals, default):
+    """Which half-life (years) predicts the scoring level of the NEXT match
+    best? For each of the most recent matches, predict its 1st-innings total
+    from the recency-weighted mean of all EARLIER matches (weights decay by
+    real days) and keep the half-life with the lowest average error. The
+    configured value stays unless another one is better by HL_MIN_GAIN."""
+    ok = ~np.isnan(totals)
+    t = np.asarray(day_no, dtype=np.float64)[ok]
+    y = np.asarray(totals, dtype=np.float64)[ok]
+    n = len(y)
+    info = {"default": float(default), "chosen": float(default), "mae": {}, "n_test": 0}
+    if n < 80:
+        return float(default), info
+    order = np.argsort(t, kind="stable")
+    t, y = t[order], y[order]
+    n_test = int(min(150, max(30, n // 4)))
+    cands = sorted(set(list(HALF_LIFE_CANDIDATES) + [float(default)]))
+    for h in cands:
+        errs = []
+        for j in range(n - n_test, n):
+            w = 0.5 ** ((t[j] - t[:j]) / (h * 365.25))
+            errs.append(abs(y[j] - float((w * y[:j]).sum() / w.sum())))
+        info["mae"][str(h)] = round(float(np.mean(errs)), 2)
+    best = min(cands, key=lambda h: info["mae"][str(h)])
+    if info["mae"][str(best)] <= (1.0 - HL_MIN_GAIN) * info["mae"][str(float(default))]:
+        info["chosen"] = float(best)
+    info["n_test"] = n_test
+    return info["chosen"], info
+
+
+# ------------------------------------------------------------
+# training
+# ------------------------------------------------------------
+# ===== END OF PART 1 of 4 =====
+
+# ===== PART 2 of 4 - START =====
 def train_engine(db_path, league, T_overs, pp_end, death_over, half_life,
-                 era_start=None, elo_keep=0.75, cap=None, log=print):
+                 era_start=None, elo_keep=0.75, cap=None, log=print,
+                 cutoff_date=None, fast=False, holdout=True, max_rows=130000):
+    """cutoff_date / fast / holdout are used by the engine's own self-test:
+    train only on matches BEFORE cutoff_date, skip gradient boosting (fast),
+    and do not recurse (holdout=False)."""
     t0 = time.time()
+    half_life_cfg = half_life
     T = int(T_overs) * 6
     d_start = int(death_over) * 6
 
@@ -1254,6 +1319,8 @@ def train_engine(db_path, league, T_overs, pp_end, death_over, half_life,
     fallback = pd.to_datetime(m["season"].astype(int).astype(str) + "-07-01", format="%Y-%m-%d", errors="coerce")
     m["date"] = m["date"].fillna(fallback)
     m = m.sort_values(["date", "idnum"])
+    if cutoff_date is not None:
+        m = m[m["date"] < cutoff_date]
     if cap:
         m = m.tail(int(cap))
     m = m.reset_index(drop=True)
@@ -1294,6 +1361,12 @@ def train_engine(db_path, league, T_overs, pp_end, death_over, half_life,
     d = d[d.inn.isin([1, 2])].reset_index(drop=True)
     for c in ("ov", "runs", "wk", "br", "legal"):
         d[c] = d[c].astype(np.int32)
+
+    # ---- memory length: tested out of time on this league's own history ----
+    tot1 = d[d.inn == 1].groupby("mid").runs.sum()
+    day_no = (m["date"] - pd.Timestamp("2000-01-01")).dt.days.astype(float).values
+    half_life, hl_info = _auto_half_life(day_no, m["mid"].map(tot1).astype(float).values, half_life_cfg)
+    log(f"half-life: configured {half_life_cfg}, chosen {half_life} (MAE by candidate {hl_info['mae']})")
 
     # ---- recency weights from the REAL match date ----
     latest = int(m.season.max())
@@ -1485,6 +1558,7 @@ def train_engine(db_path, league, T_overs, pp_end, death_over, half_life,
     toss_w = inn.mid.map(toss_map).fillna("").values
     toss_i = np.where(toss_w == inn.bat.values, 1.0, np.where(toss_w == inn.bowl.values, -1.0, 0.0))
     era_i = (inn.season.values >= era_start).astype(float) if era_start else np.zeros(n_inn2)
+    trend_i = ((inn["date"] - latest_date).dt.days.astype(float) / 365.25).values      # years before the latest match (<= 0)
     fold_i = (inn.mid.values % N_FOLDS).astype(int)
     w_i = inn.w.values
     T_i = inn.balls_tot.values.astype(np.int64)
@@ -1500,7 +1574,7 @@ def train_engine(db_path, league, T_overs, pp_end, death_over, half_life,
         "g_nd": inn.g_nd.values, "g_d": inn.g_d.values, "g_bnd": inn.g_bnd.values,
         "bat_nd": inn.bat_nd.values, "bowl_nd": inn.bowl_nd.values,
         "bat_d": inn.bat_d.values, "bowl_d": inn.bowl_d.values,
-        "elo": elo_i, "era": era_i,
+        "elo": elo_i, "era": era_i, "trend": trend_i,
     }
 
     # ---- legal frame ----
@@ -1581,16 +1655,85 @@ def train_engine(db_path, league, T_overs, pp_end, death_over, half_life,
         Hv = np.concatenate([p[1] for p in parts])
         return idx, Hv
 
+    def state_at(i, b):
+        """(runs, wickets, balls-since-wicket) of innings i after b legal balls."""
+        k = np.int64(i) * KM + int(b)
+        pos = int(np.searchsorted(key_l, k))
+        if pos >= len(key_l) or key_l[pos] != k:
+            return None
+        return float(cr_l[pos]), int(cw_l[pos]), float(bsw_l[pos])
+
+    def holdout_report():
+        """SELF-TEST on the most recent matches: train a second engine on
+        everything BEFORE them (same recipe, without boosting), then predict
+        each of them from the start / over 6 / over 10 / over 15 like the
+        live app would, and compare with what really happened."""
+        n_hold = int(min(HOLDOUT_MAX, max(HOLDOUT_MIN, len(mm) * 0.12)))
+        held = mm.sort_values(["date", "idnum"]).tail(n_hold)
+        cutoff = held["date"].min()
+        raw_cut = train_engine(db_path, league, T_overs, pp_end, death_over, half_life_cfg, era_start,
+                               elo_keep, cap, log=lambda *_: None, cutoff_date=cutoff, fast=True,
+                               holdout=False, max_rows=60000)
+        Ecut = prepare_engine(raw_cut)
+        cps = (36, 60, 90) if T == 120 else tuple(int(T * f) // 6 * 6 for f in (0.3, 0.5, 0.75))
+        pos_of = {(int(a_), int(b_)): i_ for i_, (a_, b_) in enumerate(zip(inn.mid.values, inn.inn.values))}
+        acc = {}
+        for hm in held.itertuples():
+            for k_ in (1, 2):
+                i_ = pos_of.get((int(hm.mid), k_))
+                if i_ is None:
+                    continue
+                for b_ in cps:
+                    if b_ >= T_i[i_]:
+                        continue
+                    now = state_at(i_, b_)
+                    if now is None:
+                        continue
+                    r_now, w_now, bsw_now = now
+                    prev = state_at(i_, b_ - 12)
+                    s = {
+                        "innings": k_, "b": b_, "r": r_now, "w": w_now,
+                        "last_r": r_now - (prev[0] if prev else 0.0), "last_n": min(12, b_),
+                        "bsw": bsw_now, "window_over": T_overs, "line": 0,
+                        "batting_team": inn.bat.values[i_], "bowling_team": inn.bowl.values[i_],
+                        "ground": inn.venue.values[i_], "target": float(target_i[i_]) if k_ == 2 else 0,
+                        "pitch_mult": 1.0, "dew_level": "none", "toss": float(toss_i[i_]),
+                        "mc": False, "player": None, "squad": None,
+                    }
+                    res = predict(Ecut, s)
+                    rec = acc.setdefault((k_, b_), {"err": [], "naive": [], "p": [], "y": []})
+                    if k_ == 1:
+                        rec["err"].append(res["final_expected"] - float(fin_i[i_]))
+                        rec["naive"].append(r_now * T / b_ - float(fin_i[i_]))
+                    if bool(hm.decided) and res.get("win_prob") is not None:
+                        rec["p"].append(res["win_prob"])
+                        rec["y"].append(1.0 if hm.winner == inn.bat.values[i_] else 0.0)
+        rows = []
+        for (k_, b_), rec in sorted(acc.items()):
+            row = {"innings": k_, "after_over": b_ // 6}
+            if rec["err"]:
+                e_ = np.array(rec["err"]); nv_ = np.array(rec["naive"])
+                row.update({"n": int(len(e_)), "bias": round(float(e_.mean()), 1),
+                            "mae": round(float(np.abs(e_).mean()), 1),
+                            "naive_mae": round(float(np.abs(nv_).mean()), 1)})
+            if len(rec["p"]) >= 5:
+                p_ = np.array(rec["p"]); y_ = np.array(rec["y"])
+                row.update({"n_win": int(len(p_)), "brier": round(brier(p_, y_), 3)})
+            rows.append(row)
+        return {"n_matches": int(n_hold), "from": str(held["date"].min().date()),
+                "to": str(held["date"].max().date()), "trained_before": str(cutoff.date()), "rows": rows}
+
     rng = np.random.default_rng(7)
     models, gb_models, resid_tab, oof_store = {}, {}, {}, {}
     metrics = {"n_matches": int(len(mm)), "seasons": [int(m.season.min()), int(m.season.max())],
-               "dates": [str(m["date"].min().date()), str(latest_date.date())]}
+               "dates": [str(m["date"].min().date()), str(latest_date.date())],
+               "half_life_auto": hl_info}
     rep_balls = (36, 60, 84, 102) if T == 120 else tuple(int(T * f) // 6 * 6 for f in (0.3, 0.5, 0.7, 0.85))
 
     for k in (1, 2):
         idx, Hv = expand(k)
-        if len(idx) > 130000:
-            sub = rng.choice(len(idx), 130000, replace=False)
+        if len(idx) > max_rows:
+            sub = rng.choice(len(idx), max_rows, replace=False)
             idx, Hv = idx[sub], Hv[sub]
         ii = cp_iid[idx]
         b_ = cp_b[idx]; r_ = cp_r[idx]
@@ -1614,21 +1757,23 @@ def train_engine(db_path, league, T_overs, pp_end, death_over, half_life,
             Mf = fit_ridge(X[tr], y[tr], wts[tr])
             fold_models.append(Mf)
             oof[~tr] = ridge_predict(Mf, X[~tr])
-            Gf = gb_fit(X[tr], y[tr] - ridge_predict(Mf, X[tr]), wts[tr], seed=11 + f)
-            gb_folds.append(Gf)
-            oof_gb[~tr] = gb_predict(Gf, X[~tr])
+            if not fast:
+                Gf = gb_fit(X[tr], y[tr] - ridge_predict(Mf, X[tr]), wts[tr], seed=11 + f)
+                gb_folds.append(Gf)
+                oof_gb[~tr] = gb_predict(Gf, X[~tr])
         Mall = fit_ridge(X, y, wts)
 
         # gradient boosting is used for this innings only if it wins OUT-OF-SAMPLE
         mse_r = float(np.average((y - oof) ** 2, weights=wts))
         mse_g = float(np.average((y - oof - oof_gb) ** 2, weights=wts))
-        use_gb = mse_g < (1.0 - GB_MIN_GAIN) * mse_r
+        use_gb = (not fast) and mse_g < (1.0 - GB_MIN_GAIN) * mse_r
         gb_models[k] = gb_fit(X, y - ridge_predict(Mall, X), wts, seed=5) if use_gb else None
         pred_oof = oof + (oof_gb if use_gb else 0.0)
-        metrics[f"gb_inn{k}"] = {
-            "used": bool(use_gb), "mse_ridge": round(mse_r, 2), "mse_gb": round(mse_g, 2),
-            "gain_pct": round(100.0 * (mse_r - mse_g) / max(mse_r, 1e-9), 2),
-        }
+        if not fast:
+            metrics[f"gb_inn{k}"] = {
+                "used": bool(use_gb), "mse_ridge": round(mse_r, 2), "mse_gb": round(mse_g, 2),
+                "gain_pct": round(100.0 * (mse_r - mse_g) / max(mse_r, 1e-9), 2),
+            }
 
         res = y - pred_oof
         He = np.minimum(b_ + Hv, T) - b_
@@ -1800,7 +1945,7 @@ def train_engine(db_path, league, T_overs, pp_end, death_over, half_life,
     out = {
         "version": ENGINE_VERSION, "league": league, "T": T, "T_overs": int(T_overs),
         "pp_end": int(pp_end), "death_over": int(death_over), "d_start": int(d_start),
-        "latest_season": latest, "era_start": era_start,
+        "latest_season": latest, "era_start": era_start, "half_life_used": float(half_life),
         "latest_date": str(latest_date.date()), "latest_ord": int(latest_date.toordinal()),
         "hl_days": float(half_life * 365.25), "team_hl_days": float(team_hl * 365.25),
         "par_cum": {str(k): par_cum[k].tolist() for k in par_cum},
@@ -1819,6 +1964,17 @@ def train_engine(db_path, league, T_overs, pp_end, death_over, half_life,
         "ball_tab": ball_probs.tolist(),
         "metrics": metrics, "train_seconds": round(time.time() - t0, 1),
     }
+    # ---- self-test on the latest matches (real data, trained without them) ----
+    # The big training tables are dropped first so the second (smaller) engine
+    # fits in the same memory - a free server has little RAM.
+    if holdout and not fast and len(mm) >= 150:
+        del d, X, Xe, X1, X2, wts, fo, y, oof, oof_gb, res
+        gc.collect()
+        try:
+            metrics["holdout"] = holdout_report()
+        except Exception as exc:                      # never let the self-test break training
+            metrics["holdout"] = {"error": f"{type(exc).__name__}: {exc}"}
+        out["train_seconds"] = round(time.time() - t0, 1)
     log(f"done in {time.time()-t0:.1f}s")
     return out
 
@@ -1899,7 +2055,7 @@ def team_ctx(E, batting_team, bowling_team, ground, innings, squad=None):
     return {
         "g_nd": g.get("g_nd", 0.0), "g_d": g.get("g_d", 0.0), "g_bnd": g.get("g_bnd", 0.0),
         "bat_nd": bat_nd, "bat_d": bat_d, "bowl_nd": bowl_nd, "bowl_d": bowl_d,
-        "elo": eb - ew, "era": era,
+        "elo": eb - ew, "era": era, "trend": 0.0,     # 0 = "now" (the newest matches' level)
     }, h2h, (wa, wb), home_adv, (bat_home, bowl_home), (v_wa, v_wb)
 
 
@@ -2353,6 +2509,25 @@ def get_team_roster(_connection, league, team, role):
 # ===== END OF PART 2 of 4 =====
 
 # ===== PART 3 of 4 - START =====
+@st.cache_data(show_spinner=False)
+def get_league_players(_connection, league, role):
+    """EVERY player who batted / bowled in this league in the last seasons,
+    for any team - so a new signing or a player who moved clubs can be put
+    in a Playing XI even if he did not play for this team before."""
+    column = "batter" if role == "batting" else "bowler"
+    latest = get_latest_season(_connection, league)
+    lookback = LEAGUE_ROSTER_LOOKBACK_SEASONS.get(league, DEFAULT_ROSTER_LOOKBACK_SEASONS)
+    seasons = [latest - k for k in range(lookback)] if latest is not None else []
+    if not seasons:
+        return []
+    ph = ",".join("?" for _ in seasons)
+    rows = _connection.execute(
+        f"SELECT DISTINCT d.{column} FROM deliveries d JOIN matches m "
+        f"ON m.match_id=d.match_id AND m.league=d.league WHERE d.league=? "
+        f"AND d.{column}<>'' AND m.season IN ({ph}) ORDER BY d.{column}", [league, *seasons]).fetchall()
+    return [str(r[0]).strip() for r in rows]
+
+
 def _recency(date_text, ref_ord, hl_days):
     """0.5 ** (age_in_days / half_life_days) for a match date (ISO text)."""
     try:
@@ -2536,8 +2711,6 @@ def get_engine(league, db_signature):
     except Exception:
         pass
     return prepare_engine(raw)
-# VasuDev Cricket AI - ENGINE v2          (PART 2 of 2)
-# Paste this file RIGHT BELOW Part 1 (same app.py). Part 1 + Part 2 = the complete app.
 
 
 # ============================================================
@@ -2591,6 +2764,7 @@ MATCH_WIDGET_KEYS = [
     "batsman_a_select", "batsman_a_manual", "batsman_b_select", "batsman_b_manual",
     "current_bowler_select", "current_bowler_manual", "batting_xi_select", "bowling_xi_select",
     "toss_select", "innings_select", "target_runs_widget", "incoming_batsman_select",
+    "batting_xi_extra", "bowling_xi_extra",
 ]
 MATCH_PERSISTED_KEYS = [
     "persisted_batting_team", "persisted_bowling_team", "persisted_ground", "persisted_ground_manual",
@@ -2748,14 +2922,39 @@ def _cap_result(name, ok):
     caps[name] = 0 if ok else int(caps.get(name, 0)) + 1
 
 
-def fetch_live_matches():
-    """Today's / currently live matches. Returns (list_of_matches, error)."""
-    data, error = _live_api_get("currentMatches", {"offset": 0})
-    if error:
-        return [], error
-    matches = data.get("data") if isinstance(data, dict) else None
-    if not isinstance(matches, list):
-        return [], "Live API response had no usable match list."
+def fetch_live_matches(max_pages=4):
+    """Matches of the provider's 'current matches' list. The provider sends
+    25 per page (offset = rows to skip, info.totalRows = how many exist), so
+    several pages are read - one API hit each - until everything is in or
+    max_pages is reached. Returns (list_of_matches, error)."""
+    matches, seen, offset, pages, total = [], set(), 0, 0, None
+    while pages < max_pages:
+        data, error = _live_api_get("currentMatches", {"offset": offset})
+        pages += 1
+        if error:
+            if not matches:
+                return [], error
+            break
+        rows = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(rows, list) or not rows:
+            if not matches:
+                return [], "Live API response had no usable match list."
+            break
+        for m in rows:
+            mid = m.get("id") if isinstance(m, dict) else None
+            if mid is None or mid in seen:
+                continue
+            seen.add(mid)
+            matches.append(m)
+        info = data.get("info") if isinstance(data, dict) else None
+        total = _to_int(info.get("totalRows"), None) if isinstance(info, dict) else None
+        offset += len(rows)
+        if total is not None and offset >= total:
+            break
+        if total is None and len(rows) < 25:
+            break
+    st.session_state["live_pages_fetched"] = pages
+    st.session_state["live_total_rows"] = total if pages else None
     return matches, None
 
 
@@ -3174,22 +3373,91 @@ def legal_ball_values(deliveries):
     return {"vals": vals, "wk_idx": wk_idx, "n": len(vals), "last": last_legal}
 
 
-def guess_league_for_match(match_type, series_name, match_name, teams):
-    """Returns (league or None, note). T20 only (IPL, BBL, WBBL, T20I)."""
+BIG_BASH_CLUB_KEYS = {_team_key(slug.replace("_", " ")) for slug in WBBL_CLUB_SLUGS}
+IPL_CLUB_KEYS = {_team_key(n) for n in (
+    "Mumbai Indians", "Chennai Super Kings", "Royal Challengers Bengaluru", "Royal Challengers Bangalore",
+    "Kolkata Knight Riders", "Delhi Capitals", "Punjab Kings", "Rajasthan Royals", "Sunrisers Hyderabad",
+    "Gujarat Titans", "Lucknow Super Giants")}
+
+
+def guess_league_for_match(match_type, series_name, match_name, teams, strict=False):
+    """Returns (league or None, note). T20 only (IPL, BBL, WBBL, T20I).
+    The league is recognised from the series / match name AND from the club
+    names (the provider's list often has no series name). strict=True (used
+    to order the match list) calls a men's T20 a T20 international only if
+    the name says so; strict=False (used when a match is loaded) is lenient."""
     mt = str(match_type or "").lower()
     series = str(series_name or "").lower()
     name = str(match_name or "").lower()
     blob = " ".join([series, name] + [str(t).lower() for t in teams])
     is_women = bool(re.search(r"\bwomen\b|\bwomens\b|women's|\bwbbl\b", blob))
-    if "t20" not in mt and "twenty20" not in mt:
-        return None, f"This match is '{match_type or 'unknown format'}' - the app is T20 only (IPL, BBL, WBBL, T20I)."
-    if "ipl" in blob or "indian premier league" in blob:
-        return "IPL", ""
-    if "big bash" in blob or "bbl" in blob or "spring challenge" in blob:
-        return ("Women's Big Bash League" if (is_women or "spring challenge" in blob) else "Men's Big Bash League"), ""
+    if mt and "t20" not in mt and "twenty20" not in mt:
+        return None, f"This match is '{match_type}' - the app is T20 only (IPL, BBL, WBBL, T20I)."
+    keys = {_team_key(t) for t in teams if t}
     if is_women:
+        if ("spring challenge" in blob or "wbbl" in blob or "big bash" in blob
+                or (keys & BIG_BASH_CLUB_KEYS)):
+            return "Women's Big Bash League", ""
         return None, "Women's international / other women's T20 is not one of the app's leagues."
+    if "ipl" in blob or "indian premier league" in blob or (len(keys) == 2 and keys <= IPL_CLUB_KEYS):
+        return "IPL", ""
+    if "big bash" in blob or re.search(r"\bbbl\b", blob) or (len(keys) == 2 and keys <= BIG_BASH_CLUB_KEYS):
+        return "Men's Big Bash League", ""
+    if strict and not re.search(r"t20i|international", blob):
+        return None, "Not recognised as IPL / BBL / WBBL / T20I."
     return "T20 International", ""
+
+
+def live_match_state(m):
+    """LIVE / Upcoming / Finished from the provider's flags and status text."""
+    status_l = str(m.get("status", "")).lower()
+    if bool(m.get("matchEnded")) or any(
+            w in status_l for w in ("won by", "match tied", "no result", "abandon", "drawn", " draw")):
+        return "Finished"
+    if m.get("matchStarted") is False or any(w in status_l for w in ("not started", "starts", "upcoming")):
+        return "Upcoming"
+    return "LIVE"
+
+
+def live_match_label(m):
+    teams_ = m.get("teams") or []
+    vs = " vs ".join(str(t) for t in teams_) if teams_ else m.get("name", "Match")
+    status = f" ({m.get('status')})" if m.get("status") else ""
+    return f"{live_match_state(m)} • {vs}{status}"
+
+
+def ordered_live_matches(matches, only_supported, search_text):
+    """The match picker list. only_supported=True keeps ONLY IPL / BBL /
+    WBBL / T20I (everything else - Tests, ODIs, domestic, other women's
+    matches - is hidden). Searchable. Order: franchise leagues, then T20I,
+    then LIVE, Upcoming, Finished. Returns (shown_list, hidden_count)."""
+    keep, hidden = [], 0
+    for idx, m in enumerate(matches):
+        if not isinstance(m, dict):
+            continue
+        league, _ = guess_league_for_match(m.get("matchType"), m.get("series"), m.get("name"),
+                                           m.get("teams") or [], strict=True)
+        if only_supported and league is None:
+            hidden += 1
+            continue
+        blob = " ".join([str(m.get("name", "")), " ".join(str(t) for t in (m.get("teams") or [])),
+                         str(m.get("status", ""))]).lower()
+        if search_text and search_text not in blob:
+            continue
+        rank_state = {"LIVE": 0, "Upcoming": 1, "Finished": 2}[live_match_state(m)]
+        rank_league = 0 if league in ("IPL", "Men's Big Bash League", "Women's Big Bash League") else (
+            1 if league else 2)
+        keep.append((rank_league, rank_state, idx, m))
+    keep.sort(key=lambda x: x[:3])
+    return [x[3] for x in keep], hidden
+
+
+def _guard_select(widget_key, options):
+    """A stored value that is no longer a valid option would break the
+    widget - drop it so the widget falls back to its default."""
+    cur = st.session_state.get(widget_key)
+    if cur is not None and cur not in options:
+        st.session_state.pop(widget_key, None)
 
 
 # ------------------------------------------------------------
@@ -3603,7 +3871,10 @@ if live_mode_on:
                 matches, error = fetch_live_matches()
                 st.session_state["live_matches"] = matches
                 st.session_state["api_caps"] = {}
-                st.session_state["live_last_fetch_note"] = error or f"{len(matches)} match(es) found."
+                _tot = st.session_state.get("live_total_rows")
+                st.session_state["live_last_fetch_note"] = error or (
+                    f"{len(matches)} match(es) fetched" + (f" of {_tot}" if _tot else "")
+                    + f" ({st.session_state.get('live_pages_fetched', 1)} API hit(s)).")
                 st.rerun()
 
             note = st.session_state.get("live_last_fetch_note")
@@ -3612,24 +3883,30 @@ if live_mode_on:
 
             live_matches = st.session_state.get("live_matches") or []
             if live_matches:
-                def _match_label(m):
-                    teams_ = m.get("teams") or []
-                    vs = " vs ".join(teams_) if teams_ else m.get("name", "Match")
-                    return f"{vs} ({m.get('status', '')})" if m.get("status") else vs
-
-                labels = [_match_label(m) for m in live_matches]
-                chosen_idx = st.selectbox(
-                    "Select a live match", list(range(len(live_matches))),
-                    format_func=lambda i: labels[i], key="live_match_select",
-                )
-                if st.button("📥 Load Selected Match", use_container_width=True, key="load_live_match_button"):
-                    chosen = live_matches[chosen_idx]
-                    # a new match: forget EVERYTHING of the old one first
-                    reset_match_state(clear_selections=True)
-                    st.session_state["live_selected_id"] = chosen.get("id")
-                    st.session_state["api_caps"] = {}
-                    live_load_match(chosen.get("id"))
-                    st.rerun()
+                only_supported = st.checkbox("Only IPL / BBL / WBBL / T20I (hide everything else)", value=True,
+                                             key="live_only_supported")
+                search_text = st.text_input("Search match / team (e.g. Sixers)", key="live_match_search").strip().lower()
+                shown_matches, hidden_n = ordered_live_matches(live_matches, only_supported, search_text)
+                if only_supported and hidden_n:
+                    st.caption(f"{hidden_n} other match(es) hidden.")
+                if not shown_matches:
+                    st.caption("No IPL / BBL / WBBL / T20I match found. Press Refresh (the provider may not list it "
+                               "yet or it may be beyond the fetched pages) - then use Manual mode.")
+                else:
+                    labels = [live_match_label(m) for m in shown_matches]
+                    _guard_select("live_match_select", list(range(len(shown_matches))))
+                    chosen_idx = st.selectbox(
+                        "Select a live match", list(range(len(shown_matches))),
+                        format_func=lambda i: labels[i], key="live_match_select",
+                    )
+                    if st.button("📥 Load Selected Match", use_container_width=True, key="load_live_match_button"):
+                        chosen = shown_matches[chosen_idx]
+                        # a new match: forget EVERYTHING of the old one first
+                        reset_match_state(clear_selections=True)
+                        st.session_state["live_selected_id"] = chosen.get("id")
+                        st.session_state["api_caps"] = {}
+                        live_load_match(chosen.get("id"))
+                        st.rerun()
             elif os.environ.get("CRICKET_API_KEY", "").strip():
                 st.caption("Tap 'Refresh Match List' to see today's live matches.")
 
@@ -3697,13 +3974,6 @@ with st.sidebar:
     # replaced by the old selection. ---
     apply_live_teams_and_ground(teams, grounds_list, league_gender)
 
-    def _guard_select(widget_key, options):
-        """A stored value that is no longer a valid option would break the
-        widget - drop it so the widget falls back to its default."""
-        cur = st.session_state.get(widget_key)
-        if cur is not None and cur not in options:
-            st.session_state.pop(widget_key, None)
-
     _guard_select("batting_team_select", teams)
     batting_team = st.selectbox("Batting Team", teams, key="batting_team_select",
                                 **idx_kw("batting_team_select", teams, "persisted_batting_team"))
@@ -3741,8 +4011,12 @@ with st.sidebar:
     # rosters are needed by the live fill of XI / players, so build them here
     batting_roster = get_team_roster(connection, league, batting_team, "batting")
     bowling_roster_full = get_team_roster(connection, league, bowling_team, "bowling")
-    apply_live_xi_and_toss(batting_team, bowling_team, batting_roster, bowling_roster_full, league_gender)
-    apply_live_players(batting_roster, bowling_roster_full)
+    # pools: the team's own players first, then EVERY other player of the league
+    # (new signings, players who moved clubs) - used for the XI, batters and bowler
+    batting_players = list(dict.fromkeys(batting_roster + get_league_players(connection, league, "batting")))
+    bowling_players = list(dict.fromkeys(bowling_roster_full + get_league_players(connection, league, "bowling")))
+    apply_live_xi_and_toss(batting_team, bowling_team, batting_players, bowling_players, league_gender)
+    apply_live_players(batting_players, bowling_players)
 
     st.markdown("---")
     st.subheader("Conditions")
@@ -3771,7 +4045,7 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Players (optional)")
     st.caption("Set once. Strike rotates automatically; a wicket asks for the next batter.")
-    batsman_options = ["Not Selected"] + batting_roster
+    batsman_options = ["Not Selected"] + batting_players
     _guard_select("batsman_a_select", batsman_options + [MANUAL_OPTION_LABEL])
     batsman_a = select_with_manual_option("Batsman 1", batsman_options, "persisted_batsman_a",
                                           "persisted_batsman_a_manual", "batsman_a")
@@ -3784,7 +4058,7 @@ with st.sidebar:
     if st.button("Swap Strike", use_container_width=True, key="swap_strike_button"):
         st.session_state.on_strike_index = 1 - strike_idx
         st.rerun()
-    bowler_options = ["Not Selected"] + bowling_roster_full
+    bowler_options = ["Not Selected"] + bowling_players
     _guard_select("current_bowler_select", bowler_options + [MANUAL_OPTION_LABEL])
     bowler_choice = select_with_manual_option("Current Bowler", bowler_options, "persisted_current_bowler",
                                               "persisted_current_bowler_manual", "current_bowler")
@@ -3797,21 +4071,28 @@ with st.sidebar:
         "prediction toward THIS XI's real record instead of the team's "
         "average. Leave empty to just use the team average."
     )
-    for _xi_key, _roster in (("batting_xi_select", batting_roster), ("bowling_xi_select", bowling_roster_full)):
+    for _xi_key, _roster in (("batting_xi_select", batting_players), ("bowling_xi_select", bowling_players)):
         if _xi_key in st.session_state:
             st.session_state[_xi_key] = [n for n in (st.session_state[_xi_key] or []) if n in _roster]
     batting_xi = st.multiselect(
-        f"{batting_team} Playing XI (batters)", batting_roster, key="batting_xi_select",
+        f"{batting_team} Playing XI (batters)", batting_players, key="batting_xi_select",
         **({} if "batting_xi_select" in st.session_state else
-           {"default": [n for n in st.session_state.get("persisted_batting_xi", []) if n in batting_roster]}),
+           {"default": [n for n in st.session_state.get("persisted_batting_xi", []) if n in batting_players]}),
     )
     st.session_state["persisted_batting_xi"] = batting_xi
+    _xtra_bat = st.text_input(f"{batting_team} XI: extra names not in the list (comma separated)",
+                              key="batting_xi_extra")
     bowling_xi = st.multiselect(
-        f"{bowling_team} Playing XI (bowlers)", bowling_roster_full, key="bowling_xi_select",
+        f"{bowling_team} Playing XI (bowlers)", bowling_players, key="bowling_xi_select",
         **({} if "bowling_xi_select" in st.session_state else
-           {"default": [n for n in st.session_state.get("persisted_bowling_xi", []) if n in bowling_roster_full]}),
+           {"default": [n for n in st.session_state.get("persisted_bowling_xi", []) if n in bowling_players]}),
     )
     st.session_state["persisted_bowling_xi"] = bowling_xi
+    _xtra_bowl = st.text_input(f"{bowling_team} XI: extra names not in the list (comma separated)",
+                               key="bowling_xi_extra")
+    # names typed by hand join the XI; a name with no history here counts as neutral
+    batting_xi = batting_xi + [n.strip() for n in _xtra_bat.split(",") if n.strip() and n.strip() not in batting_xi]
+    bowling_xi = bowling_xi + [n.strip() for n in _xtra_bowl.split(",") if n.strip() and n.strip() not in bowling_xi]
 
     # --- Live Mode: controlled score sync (only on explicit tap) ---
     if st.session_state.get("live_mode_on"):
@@ -4233,7 +4514,7 @@ if st.session_state.get("awaiting_new_batsman"):
     other_slot_name = batsman_b if out_slot == 0 else batsman_a
     dismissed = set(st.session_state.get("dismissed_batsmen", []))
     incoming_options = ["Not Selected"] + [
-        n for n in batting_roster if n not in dismissed and n != other_slot_name]
+        n for n in batting_players if n not in dismissed and n != other_slot_name]
     incoming = st.selectbox(f"New batsman in (replacing Batsman {out_slot + 1}):",
                             incoming_options, key="incoming_batsman_select")
     if st.button("Confirm New Batsman", key="confirm_new_batsman_button"):
@@ -4355,6 +4636,18 @@ st.caption(
     f"for anyone who wants the fuller picture - cricket genuinely has this much ball-to-ball variance; "
     f"showing a fake single number would just hide it, not remove it."
 )
+
+
+# --- the engine's own self-test on the latest matches: show a large bias openly ---
+_ho_main = (E["metrics"].get("holdout") or {})
+_rows1 = [r for r in _ho_main.get("rows", []) if r.get("innings") == 1 and "bias" in r]
+if _rows1:
+    _avg_bias = sum(r["bias"] for r in _rows1) / len(_rows1)
+    if abs(_avg_bias) >= 4.0:
+        st.warning(
+            f"Self-test: on the latest {_ho_main.get('n_matches')} matches this engine's 1st-innings projection was "
+            f"{_avg_bias:+.0f} runs off on average ({'too low' if _avg_bias < 0 else 'too high'}). "
+            f"Read the percentages with that in mind.")
 
 
 # ============================================================
@@ -4489,6 +4782,19 @@ with st.expander("More Insights & Details", expanded=False):
                         f"(rest comes from the team's recent average)")
         if bowling_xi:
             parts.append(f"{bowling_team} XI trust: {squad_info['bowl_conf'] * 100:.0f}%")
+        _unk = []
+        for _nm in batting_xi:
+            _raw = player_batting_phase(connection, league, _nm, E["pp_end"], E["death_over"],
+                                        E["latest_ord"], E["team_hl_days"])["raw"]
+            if sum(_raw[p][1] for p in range(3)) == 0:
+                _unk.append(_nm)
+        for _nm in bowling_xi:
+            _raw = player_bowling_phase(connection, league, _nm, E["pp_end"], E["death_over"],
+                                        E["latest_ord"], E["team_hl_days"])["raw"]
+            if sum(_raw[p][1] for p in range(3)) == 0 and _nm not in _unk:
+                _unk.append(_nm)
+        if _unk:
+            st.caption("No history in this league (counted as neutral, they change nothing): " + ", ".join(_unk))
         if parts:
             st.caption("Playing XI - " + " • ".join(parts) +
                       ". Low % usually means most named players are new/unrecognised in this league's data.")
@@ -4520,6 +4826,34 @@ with st.expander("More Insights & Details", expanded=False):
         f"{mt['seasons'][0]}-{mt['seasons'][1]}"
         + (f", match dates {_dates[0]} to {_dates[1]}" if _dates else "")
         + f" (cross-fitted by match, so these numbers are honest). Trained in {E.get('train_seconds', 0)}s.")
+    _ha = mt.get("half_life_auto") or {}
+    if _ha.get("mae"):
+        st.caption(
+            f"Memory length (half-life): {E.get('half_life_used', '?')} years - chosen by an out-of-time test "
+            f"(configured {_ha.get('default')}; average error in runs for each candidate: {_ha['mae']}). "
+            f"Recent matches count more, by their real date.")
+    try:
+        _M1 = E["models_np"][1]
+        _ti = FEATURE_NAMES.index("trend")
+        st.caption(f"Scoring-level trend learned: {_M1['coef'][_ti] / _M1['sd'][_ti] * E['T_overs']:+.1f} runs per year "
+                   f"(full innings). Predictions are at the level of the NEWEST matches.")
+    except Exception:
+        pass
+    _ho = mt.get("holdout")
+    if _ho and _ho.get("rows"):
+        st.write(f"Self-test on the latest {_ho['n_matches']} matches ({_ho['from']} to {_ho['to']}) - "
+                 f"the engine was trained WITHOUT them, then predicted them:")
+        _ho_rows = []
+        for r in _ho["rows"]:
+            _ho_rows.append({
+                "Innings": r["innings"], "After over": r["after_over"], "Matches": r.get("n", r.get("n_win", "")),
+                "Bias (runs)": r.get("bias", ""), "Error (runs)": r.get("mae", ""),
+                "Error if you only extrapolate run rate": r.get("naive_mae", ""), "Win Brier": r.get("brier", "")})
+        st.dataframe(pd.DataFrame(_ho_rows), hide_index=True, use_container_width=True)
+        st.caption("Bias: negative = the engine predicted too LOW on those matches, positive = too high (1st-innings "
+                   "final score). Brier: lower is better, 0.25 = coin flip.")
+    elif _ho and _ho.get("error"):
+        st.caption(f"Self-test could not run: {_ho['error']}")
     for _k in ("1", "2"):
         _g = mt.get(f"gb_inn{_k}")
         if _g:
